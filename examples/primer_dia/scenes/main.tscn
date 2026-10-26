@@ -1,0 +1,63 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://addons/jornada/world/main.gd" id="1_trceg"]
+[ext_resource type="PackedScene" path="res://scenes/player/player.tscn" id="2_a8y0u"]
+[ext_resource type="Script" path="res://addons/jornada/world/player_controller.gd" id="3_jkv2x"]
+[ext_resource type="Texture2D" path="res://assets/generated_assets/sprites/protagonist_sheet.png" id="4_jbj1t"]
+[ext_resource type="PackedScene" path="res://addons/jornada/scenes/npc_actor.tscn" id="5_muem4"]
+[ext_resource type="Script" path="res://addons/jornada/world/npc_actor.gd" id="6_dp3eg"]
+[ext_resource type="Texture2D" path="res://assets/generated_assets/sprites/npcs/marta_sheet.png" id="7_0ld40"]
+[ext_resource type="Texture2D" path="res://assets/generated_assets/sprites/npcs/tomas_sheet.png" id="8_gqmmt"]
+[ext_resource type="Texture2D" path="res://assets/generated_assets/sprites/npcs/lucia_sheet.png" id="9_yc10j"]
+[ext_resource type="PackedScene" path="res://addons/jornada/scenes/dialogue_box.tscn" id="10_jscy8"]
+[ext_resource type="Script" path="res://addons/jornada/ui/dialogue_box.gd" id="11_pm3ni"]
+[ext_resource type="Script" path="res://addons/jornada/work/work_order_panel.gd" id="12_y6deb"]
+[ext_resource type="Script" path="res://addons/jornada/ui/hud.gd" id="13_og1vs"]
+
+[node name="Main" type="Node2D" unique_id=1567615853]
+y_sort_enabled = true
+script = ExtResource("1_trceg")
+
+[node name="ZoneHolder" type="Node2D" parent="." unique_id=2113109069]
+y_sort_enabled = true
+
+[node name="Actors" type="Node2D" parent="." unique_id=2057601271]
+y_sort_enabled = true
+
+[node name="Player" type="CharacterBody2D" parent="Actors" unique_id=1987111995 instance=ExtResource("2_a8y0u")]
+collision_layer = 4
+collision_mask = 3
+motion_mode = 1
+script = ExtResource("3_jkv2x")
+sheet = ExtResource("4_jbj1t")
+
+[node name="Marta" type="StaticBody2D" parent="Actors" unique_id=91502900 instance=ExtResource("5_muem4")]
+collision_layer = 2
+collision_mask = 0
+script = ExtResource("6_dp3eg")
+npc_id = "marta"
+sheet = ExtResource("7_0ld40")
+
+[node name="Tomas" type="StaticBody2D" parent="Actors" unique_id=1219746233 instance=ExtResource("5_muem4")]
+collision_layer = 2
+collision_mask = 0
+script = ExtResource("6_dp3eg")
+npc_id = "tomas"
+sheet = ExtResource("8_gqmmt")
+
+[node name="Lucia" type="StaticBody2D" parent="Actors" unique_id=1125565706 instance=ExtResource("5_muem4")]
+collision_layer = 2
+collision_mask = 0
+script = ExtResource("6_dp3eg")
+npc_id = "lucia"
+sheet = ExtResource("9_yc10j")
+
+[node name="DialogueBox" type="CanvasLayer" parent="." unique_id=898642880 instance=ExtResource("10_jscy8")]
+layer = 3
+script = ExtResource("11_pm3ni")
+
+[node name="WorkOrderPanel" type="CanvasLayer" parent="." unique_id=1518792865]
+script = ExtResource("12_y6deb")
+
+[node name="HUD" type="CanvasLayer" parent="." unique_id=1294531005]
+script = ExtResource("13_og1vs")

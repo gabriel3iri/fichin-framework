@@ -1,0 +1,56 @@
+{
+	"zones": {
+		"plaza": {
+			"scene": "res://scenes/zones/plaza.tscn",
+			"size": [
+				44,
+				26
+			],
+			"layout": "res://data/layouts/plaza.json",
+			"connections": {
+				"panaderia": {
+					"door_tile": [
+						21,
+						9
+					],
+					"door_size": [
+						2,
+						3
+					],
+					"approach": "south",
+					"spawn_tile": [
+						21,
+						10
+					],
+					"spawn_dx": 8
+				}
+			}
+		},
+		"panaderia": {
+			"scene": "res://scenes/zones/panaderia.tscn",
+			"size": [
+				16,
+				11
+			],
+			"layout": "res://data/layouts/panaderia.json",
+			"connections": {
+				"plaza": {
+					"door_tile": [
+						7,
+						10
+					],
+					"door_size": [
+						2,
+						1
+					],
+					"approach": "north",
+					"spawn_tile": [
+						7,
+						9
+					],
+					"spawn_dx": 8
+				}
+			}
+		}
+	}
+}

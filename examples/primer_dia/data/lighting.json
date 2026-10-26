@@ -1,0 +1,42 @@
+{
+	"_doc": "Luz del día (DayLight).",
+	"sunrise": "06:40",
+	"sunset": "19:30",
+	"sunrise_azimuth": 100,
+	"sunset_azimuth": 260,
+	"max_sun_altitude": 50,
+	"exterior": [
+		{
+			"time": "07:00",
+			"color": "#c8b8b0",
+			"glow": 0.3,
+			"sun": 0.4
+		},
+		{
+			"time": "09:00",
+			"color": "#f2f0ea",
+			"glow": 0.0,
+			"sun": 0.9
+		},
+		{
+			"time": "13:00",
+			"color": "#ffffff",
+			"glow": 0.0,
+			"sun": 1.0
+		}
+	],
+	"interior": [
+		{
+			"time": "07:00",
+			"color": "#d8ccc0",
+			"glow": 0.5,
+			"sun": 0.0
+		},
+		{
+			"time": "13:00",
+			"color": "#f4f0ea",
+			"glow": 0.2,
+			"sun": 0.0
+		}
+	]
+}

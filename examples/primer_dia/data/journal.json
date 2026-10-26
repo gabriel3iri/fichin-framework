@@ -1,0 +1,84 @@
+{
+	"_doc": "Diario del ejemplo: una sola categoría y las tres personas.",
+	"groups": [
+		{
+			"id": "village",
+			"title_key": "ui_journal_group_village",
+			"categories": [
+				"village"
+			]
+		}
+	],
+	"category_group": {
+		"village": "village"
+	},
+	"deductions": [
+		{
+			"id": "lucia_cat_found",
+			"title_key": "ded_lucia_cat_found",
+			"all_of": [
+				"lucia_lost_cat",
+				"tomas_route"
+			],
+			"any_of": []
+		}
+	],
+	"people": [
+		{
+			"id": "marta",
+			"name_key": "chr_marta",
+			"role_key": "role_marta",
+			"bio_key": "bio_marta",
+			"age": 58,
+			"dialogue": [
+				"marta"
+			],
+			"sheet": "",
+			"heard": "",
+			"flags": [
+				"oven_lit"
+			]
+		},
+		{
+			"id": "tomas",
+			"name_key": "chr_tomas",
+			"role_key": "role_tomas",
+			"bio_key": "bio_tomas",
+			"age": 44,
+			"dialogue": [
+				"tomas"
+			],
+			"sheet": "",
+			"heard": "tomas_exists",
+			"flags": [
+				"tomas_exists",
+				"tomas_route"
+			]
+		},
+		{
+			"id": "lucia",
+			"name_key": "chr_lucia",
+			"role_key": "role_lucia",
+			"bio_key": "bio_lucia",
+			"age": 9,
+			"dialogue": [
+				"lucia"
+			],
+			"sheet": "",
+			"heard": "lucia_exists",
+			"flags": [
+				"lucia_exists",
+				"lucia_lost_cat"
+			]
+		}
+	],
+	"map_cells": {
+		"plaza": [
+			0,
+			0
+		]
+	},
+	"zone_parent": {
+		"panaderia": "plaza"
+	}
+}

@@ -1,0 +1,31 @@
+{
+	"npc_id": "tomas",
+	"name_key": "chr_tomas",
+	"entries": [
+		{
+			"id": "tomas_hub",
+			"text_key": "dlg_tomas_hub",
+			"priority": 5,
+			"entry": true,
+			"options": [
+				{
+					"text_key": "opt_tomas_route",
+					"method": "ask",
+					"next": "tomas_route"
+				},
+				{
+					"text_key": "opt_bye",
+					"method": "silence",
+					"next": ""
+				}
+			]
+		},
+		{
+			"id": "tomas_route",
+			"text_key": "dlg_tomas_route",
+			"reveals": [
+				"tomas_route"
+			]
+		}
+	]
+}

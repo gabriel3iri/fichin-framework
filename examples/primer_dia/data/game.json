@@ -1,0 +1,62 @@
+{
+	"_doc": "Reglas del juego de ejemplo (GameConfig). Tres días en la panadería: cada jornada pasa al día siguiente.",
+	"title": "Primer día",
+	"scenes": {
+		"menu": "res://scenes/menu/main_menu.tscn",
+		"game": "res://scenes/main.tscn"
+	},
+	"start": {
+		"zone": "plaza",
+		"tile": [
+			21,
+			12
+		]
+	},
+	"day": {
+		"start": "07:00",
+		"end": "13:00",
+		"at_end": "next_day",
+		"first_date": "1952-04-14",
+		"reset_kinds": [
+			"state"
+		]
+	},
+	"flags": {
+		"has_journal": "journal_owned"
+	},
+	"intro": {
+		"title": "intro_title",
+		"lines": [
+			"intro_1",
+			"intro_2",
+			"intro_3"
+		],
+		"continue": "intro_continue"
+	},
+	"thoughts": {
+		"wake_first": [
+			"think_day_1",
+			"think_day_2",
+			"think_day_3"
+		],
+		"wake_later": [
+			"think_day_later"
+		]
+	},
+	"persistent_flags": [
+		"journal_owned"
+	],
+	"people": {
+		"outsiders": [],
+		"known_by_surname": [],
+		"kids": [
+			"lucia"
+		],
+		"no_surname": [
+			"lucia"
+		],
+		"known_from_start": {
+			"marta": "full"
+		}
+	}
+}

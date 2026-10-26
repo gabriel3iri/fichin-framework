@@ -1,0 +1,12 @@
+{
+	"_doc": "Eventos a hora fija, una vez por jornada.",
+	"events": [
+		{
+			"id": "journal",
+			"time": "07:01",
+			"grants": [
+				"journal_owned"
+			]
+		}
+	]
+}

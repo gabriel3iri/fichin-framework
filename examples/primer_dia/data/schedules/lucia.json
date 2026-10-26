@@ -1,0 +1,33 @@
+{
+	"npc_id": "lucia",
+	"entries": [
+		{
+			"time": "07:00",
+			"zone": "gone"
+		},
+		{
+			"time": "08:30",
+			"zone": "plaza",
+			"tile": [
+				26,
+				17
+			]
+		},
+		{
+			"time": "11:00",
+			"zone": "plaza",
+			"tile": [
+				10,
+				21
+			],
+			"weekdays": [
+				"mon",
+				"wed"
+			]
+		},
+		{
+			"time": "12:30",
+			"zone": "gone"
+		}
+	]
+}

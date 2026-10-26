@@ -1,0 +1,67 @@
+{
+	"npc_id": "marta",
+	"name_key": "chr_marta",
+	"entries": [
+		{
+			"id": "marta_first",
+			"text_key": "dlg_marta_first",
+			"priority": 10,
+			"entry": true,
+			"once_per_loop": true,
+			"condition": {
+				"loop_max": 1
+			},
+			"options": [
+				{
+					"text_key": "opt_marta_what",
+					"method": "ask",
+					"next": "marta_job"
+				},
+				{
+					"text_key": "opt_bye",
+					"method": "silence",
+					"next": ""
+				}
+			]
+		},
+		{
+			"id": "marta_hub",
+			"text_key": "dlg_marta_hub",
+			"priority": 5,
+			"entry": true,
+			"options": [
+				{
+					"text_key": "opt_marta_what",
+					"method": "ask",
+					"next": "marta_job"
+				},
+				{
+					"text_key": "opt_marta_people",
+					"method": "ask",
+					"next": "marta_people"
+				},
+				{
+					"text_key": "opt_bye",
+					"method": "silence",
+					"next": ""
+				}
+			]
+		},
+		{
+			"id": "marta_job",
+			"text_key": "dlg_marta_job",
+			"reveals": [
+				"oven_lit"
+			],
+			"next": "marta_hub"
+		},
+		{
+			"id": "marta_people",
+			"text_key": "dlg_marta_people",
+			"reveals": [
+				"tomas_exists",
+				"lucia_exists"
+			]
+		}
+	]
+}

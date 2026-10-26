@@ -1,0 +1,48 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/jornada/ui/suspicion_indicator.gd" id="1"]
+[ext_resource type="Texture2D" path="res://addons/jornada/ui/skin/ui_eye.png" id="2"]
+
+[node name="SuspicionIndicator" type="Control"]
+layout_mode = 3
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -64.0
+offset_top = 10.0
+offset_right = -10.0
+offset_bottom = 22.0
+grow_horizontal = 0
+script = ExtResource("1")
+
+[node name="Eye" type="TextureRect" parent="."]
+layout_mode = 0
+offset_top = 1.0
+offset_right = 11.0
+offset_bottom = 8.0
+texture = ExtResource("2")
+stretch_mode = 2
+
+[node name="Pips" type="HBoxContainer" parent="."]
+layout_mode = 0
+offset_left = 14.0
+offset_top = 3.0
+offset_right = 46.0
+offset_bottom = 7.0
+theme_override_constants/separation = 1
+
+[node name="Pip1" type="ColorRect" parent="Pips"]
+custom_minimum_size = Vector2(7, 3)
+layout_mode = 2
+
+[node name="Pip2" type="ColorRect" parent="Pips"]
+custom_minimum_size = Vector2(7, 3)
+layout_mode = 2
+
+[node name="Pip3" type="ColorRect" parent="Pips"]
+custom_minimum_size = Vector2(7, 3)
+layout_mode = 2
+
+[node name="Pip4" type="ColorRect" parent="Pips"]
+custom_minimum_size = Vector2(7, 3)
+layout_mode = 2

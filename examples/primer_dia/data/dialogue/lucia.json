@@ -1,0 +1,31 @@
+{
+	"npc_id": "lucia",
+	"name_key": "chr_lucia",
+	"entries": [
+		{
+			"id": "lucia_hub",
+			"text_key": "dlg_lucia_hub",
+			"priority": 5,
+			"entry": true,
+			"options": [
+				{
+					"text_key": "opt_lucia_cat",
+					"method": "ask",
+					"next": "lucia_cat"
+				},
+				{
+					"text_key": "opt_bye",
+					"method": "silence",
+					"next": ""
+				}
+			]
+		},
+		{
+			"id": "lucia_cat",
+			"text_key": "dlg_lucia_cat",
+			"reveals": [
+				"lucia_lost_cat"
+			]
+		}
+	]
+}

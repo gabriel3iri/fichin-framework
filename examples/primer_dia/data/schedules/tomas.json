@@ -1,0 +1,37 @@
+{
+	"npc_id": "tomas",
+	"entries": [
+		{
+			"time": "07:00",
+			"zone": "gone"
+		},
+		{
+			"time": "09:00",
+			"zone": "plaza",
+			"tile": [
+				6,
+				14
+			]
+		},
+		{
+			"time": "09:40",
+			"zone": "panaderia",
+			"tile": [
+				5,
+				8
+			]
+		},
+		{
+			"time": "10:10",
+			"zone": "plaza",
+			"tile": [
+				36,
+				14
+			]
+		},
+		{
+			"time": "12:00",
+			"zone": "gone"
+		}
+	]
+}

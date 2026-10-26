@@ -1,0 +1,10 @@
+[gd_resource type="Theme" load_steps=2 format=3]
+
+[ext_resource type="FontVariation" path="res://addons/jornada/ui/skin/font_pixel.tres" id="1"]
+
+[resource]
+default_font = ExtResource("1")
+default_font_size = 10
+Label/colors/font_color = Color(0.894, 0.886, 0.831, 1)
+Label/colors/font_outline_color = Color(0.122, 0.122, 0.122, 1)
+Label/constants/outline_size = 1

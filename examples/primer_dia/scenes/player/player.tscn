@@ -1,0 +1,26 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://addons/jornada/world/player_controller.gd" id="1"]
+[ext_resource type="Script" path="res://addons/jornada/world/player_camera.gd" id="2"]
+[ext_resource type="Texture2D" path="res://assets/generated_assets/sprites/protagonist_sheet.png" id="3"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
+size = Vector2(10, 6)
+
+[node name="Player" type="CharacterBody2D"]
+collision_layer = 4
+collision_mask = 3
+motion_mode = 1
+script = ExtResource("1")
+sheet = ExtResource("3")
+
+[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
+position = Vector2(0, -16)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+position = Vector2(0, -3)
+shape = SubResource("RectangleShape2D_1")
+
+[node name="Camera2D" type="Camera2D" parent="."]
+position = Vector2(0, -16)
+script = ExtResource("2")

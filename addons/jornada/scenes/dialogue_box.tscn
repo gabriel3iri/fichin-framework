@@ -1,0 +1,92 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://addons/jornada/ui/dialogue_box.gd" id="1"]
+[ext_resource type="Texture2D" path="res://addons/jornada/ui/skin/ui_panel.png" id="2"]
+[ext_resource type="Texture2D" path="res://addons/jornada/ui/skin/ui_arrow.png" id="3"]
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_panel"]
+texture = ExtResource("2")
+texture_margin_left = 4.0
+texture_margin_top = 4.0
+texture_margin_right = 4.0
+texture_margin_bottom = 4.0
+content_margin_left = 8.0
+content_margin_top = 5.0
+content_margin_right = 8.0
+content_margin_bottom = 6.0
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_plate"]
+texture = ExtResource("2")
+texture_margin_left = 4.0
+texture_margin_top = 4.0
+texture_margin_right = 4.0
+texture_margin_bottom = 4.0
+content_margin_left = 6.0
+content_margin_top = 2.0
+content_margin_right = 6.0
+content_margin_bottom = 2.0
+
+[node name="DialogueBox" type="CanvasLayer"]
+layer = 3
+script = ExtResource("1")
+
+[node name="Box" type="VBoxContainer" parent="."]
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -230.0
+offset_top = -92.0
+offset_right = 230.0
+offset_bottom = -10.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_constants/separation = -1
+
+[node name="PlateRow" type="MarginContainer" parent="Box"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+
+[node name="NamePlate" type="PanelContainer" parent="Box/PlateRow"]
+layout_mode = 2
+size_flags_horizontal = 0
+theme_override_styles/panel = SubResource("StyleBoxTexture_plate")
+
+[node name="SpeakerLabel" type="Label" parent="Box/PlateRow/NamePlate"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.804, 0.612, 1)
+text = "Nombre"
+
+[node name="Panel" type="PanelContainer" parent="Box"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxTexture_panel")
+
+[node name="VBox" type="VBoxContainer" parent="Box/Panel"]
+layout_mode = 2
+theme_override_constants/separation = 1
+
+[node name="TextLabel" type="Label" parent="Box/Panel/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_colors/font_color = Color(0.945, 0.98, 0.933, 1)
+text = "Texto"
+autowrap_mode = 3
+
+[node name="StageLabel" type="Label" parent="Box/Panel/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.647, 0.643, 0.549, 1)
+text = ""
+autowrap_mode = 3
+
+[node name="Options" type="VBoxContainer" parent="Box/Panel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="ArrowRow" type="HBoxContainer" parent="Box/Panel/VBox"]
+layout_mode = 2
+alignment = 2
+
+[node name="Arrow" type="TextureRect" parent="Box/Panel/VBox/ArrowRow"]
+layout_mode = 2
+texture = ExtResource("3")
+stretch_mode = 2

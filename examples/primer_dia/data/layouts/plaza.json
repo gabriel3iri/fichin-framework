@@ -1,0 +1,149 @@
+{
+	"size": [
+		44,
+		26
+	],
+	"ground": "grass",
+	"fills": [
+		{
+			"rect": [
+				12,
+				11,
+				20,
+				8
+			],
+			"tile": "cobble"
+		},
+		{
+			"rect": [
+				20,
+				10,
+				4,
+				1
+			],
+			"tile": "cobble"
+		},
+		{
+			"rect": [
+				0,
+				13,
+				12,
+				3
+			],
+			"tile": "dirt"
+		},
+		{
+			"rect": [
+				32,
+				13,
+				12,
+				3
+			],
+			"tile": "dirt"
+		},
+		{
+			"rect": [
+				20,
+				19,
+				4,
+				7
+			],
+			"tile": "dirt"
+		}
+	],
+	"buildings": [
+		{
+			"rect": [
+				16,
+				4,
+				12,
+				6
+			],
+			"style": "brick",
+			"roof": "red",
+			"windows": [
+				2,
+				3,
+				8,
+				9
+			],
+			"door": {
+				"dx": 5,
+				"to": "panaderia"
+			},
+			"name": "panaderia"
+		}
+	],
+	"props": [
+		{
+			"prop": "bench",
+			"tile": [
+				14,
+				14
+			]
+		},
+		{
+			"prop": "bench",
+			"tile": [
+				29,
+				14
+			]
+		},
+		{
+			"prop": "flowers",
+			"tile": [
+				15,
+				9
+			]
+		},
+		{
+			"prop": "flowers",
+			"tile": [
+				28,
+				9
+			]
+		},
+		{
+			"prop": "tree",
+			"tile": [
+				5,
+				6
+			]
+		},
+		{
+			"prop": "tree",
+			"tile": [
+				9,
+				20
+			]
+		},
+		{
+			"prop": "tree",
+			"tile": [
+				36,
+				6
+			]
+		},
+		{
+			"prop": "tree",
+			"tile": [
+				38,
+				19
+			]
+		},
+		{
+			"prop": "tree",
+			"tile": [
+				4,
+				14
+			]
+		},
+		{
+			"prop": "tree",
+			"tile": [
+				31,
+				21
+			]
+		}
+	]
+}

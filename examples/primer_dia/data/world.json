@@ -1,0 +1,276 @@
+{
+	"_doc": "Cómo arma el mundo addons/jornada/tools/build_world.gd (ver el README del framework).",
+	"tile_size": 16,
+	"paths": {
+		"tiles_dir": "res://assets/generated_assets/tiles/base/",
+		"decals_dir": "res://assets/generated_assets/tiles/decals/",
+		"props_dir": "res://assets/generated_assets/props/",
+		"buildings_dir": "res://assets/generated_assets/buildings/",
+		"npc_sheet": "res://assets/generated_assets/sprites/npcs/{id}_sheet.png",
+		"atlas": "res://assets/tilesets/atlas.png",
+		"edges_atlas": "res://assets/tilesets/edges_atlas.png",
+		"decals_atlas": "res://assets/tilesets/decals_atlas.png",
+		"tileset": "res://assets/tilesets/tileset.tres",
+		"player": "res://scenes/player/player.tscn"
+	},
+	"tiles": {
+		"prefix": "",
+		"list": [
+			{
+				"name": "grass"
+			},
+			{
+				"name": "dirt"
+			},
+			{
+				"name": "cobble"
+			},
+			{
+				"name": "floor"
+			},
+			{
+				"name": "hedge",
+				"solid": true
+			},
+			{
+				"name": "wall",
+				"solid": true
+			},
+			{
+				"name": "window",
+				"solid": true,
+				"window": true,
+				"sun": [
+					10,
+					3
+				]
+			},
+			{
+				"name": "roof_a",
+				"solid": true
+			},
+			{
+				"name": "roof_b",
+				"solid": true
+			},
+			{
+				"name": "plinth",
+				"solid": true
+			},
+			{
+				"name": "mat",
+				"solid": true
+			},
+			{
+				"name": "counter",
+				"solid": true
+			},
+			{
+				"name": "door_tl",
+				"solid": true
+			},
+			{
+				"name": "door_tr",
+				"solid": true
+			},
+			{
+				"name": "door_ml",
+				"solid": true
+			},
+			{
+				"name": "door_mr",
+				"solid": true
+			},
+			{
+				"name": "door_bl",
+				"solid": true
+			},
+			{
+				"name": "door_br",
+				"solid": true
+			},
+			{
+				"name": "door_in_tl",
+				"solid": true
+			},
+			{
+				"name": "door_in_tr",
+				"solid": true
+			},
+			{
+				"name": "door_in_ml",
+				"solid": true
+			},
+			{
+				"name": "door_in_mr",
+				"solid": true
+			},
+			{
+				"name": "door_in_bl",
+				"solid": true
+			},
+			{
+				"name": "door_in_br",
+				"solid": true
+			},
+			{
+				"name": "win_tl",
+				"solid": true,
+				"window": true
+			},
+			{
+				"name": "win_tr",
+				"solid": true,
+				"window": true
+			},
+			{
+				"name": "win_bl",
+				"solid": true,
+				"window": true,
+				"sun": [
+					9,
+					7
+				]
+			},
+			{
+				"name": "win_br",
+				"solid": true,
+				"window": true,
+				"sun": [
+					9,
+					0
+				]
+			}
+		]
+	},
+	"parts": {
+		"plinth": "plinth",
+		"door_outside": [
+			[
+				"door_tl",
+				"door_tr"
+			],
+			[
+				"door_ml",
+				"door_mr"
+			],
+			[
+				"door_bl",
+				"door_br"
+			]
+		],
+		"door_inside": [
+			[
+				"door_in_tl",
+				"door_in_tr"
+			],
+			[
+				"door_in_ml",
+				"door_in_mr"
+			],
+			[
+				"door_in_bl",
+				"door_in_br"
+			]
+		],
+		"exit_mat": "mat",
+		"counter": "counter"
+	},
+	"wall_styles": {
+		"brick": {
+			"wall": "wall",
+			"window": "window",
+			"window_2x2": [
+				"win_tl",
+				"win_tr",
+				"win_bl",
+				"win_br"
+			]
+		}
+	},
+	"roof_styles": {
+		"red": [
+			"roof_a",
+			"roof_b"
+		]
+	},
+	"outdoor_border": {
+		"tile": "hedge",
+		"depth": 2,
+		"opening": "dirt",
+		"through": []
+	},
+	"ground": {
+		"variant_weights": [
+			1.0
+		],
+		"edge_terrains": [
+			"dirt",
+			"grass",
+			"cobble"
+		],
+		"edge_styles": {
+			"dirt": "organic",
+			"grass": "grass",
+			"cobble": "paved"
+		},
+		"edge_variants": 2,
+		"decals": [],
+		"decal_rules": {},
+		"leafy_props": [
+			"tree"
+		]
+	},
+	"props": {
+		"default_collider": [
+			12,
+			6
+		],
+		"skip": [],
+		"list": {
+			"bench": {
+				"collider": [
+					28,
+					6
+				]
+			},
+			"table": {
+				"collider": [
+					24,
+					8
+				]
+			},
+			"sacks": {
+				"collider": [
+					10,
+					5
+				]
+			},
+			"oven": {
+				"collider": [
+					20,
+					8
+				]
+			},
+			"flowers": {
+				"collider": [
+					8,
+					4
+				]
+			},
+			"tree": {
+				"collider": [
+					8,
+					6
+				]
+			}
+		}
+	},
+	"npcs": {
+		"list": [
+			"marta",
+			"tomas",
+			"lucia"
+		]
+	}
+}
