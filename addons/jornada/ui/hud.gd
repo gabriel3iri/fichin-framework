@@ -9,7 +9,10 @@ var _loop: Label
 var _work_chip: PanelContainer
 var _work_label: Label
 var _hints: Label
+var _in_dialogue: bool = false   # mientras dura una charla el contador y las ayudas no se muestran (ahí va el retrato)
 var _fast: Label
+var _energy: EnergyBar
+var _money: Label
 
 ## F mantenida: el tiempo (y todo lo que se mueve) corre a esta velocidad, para revisar rutinas.
 const FAST_FORWARD: float = 8.0
@@ -34,16 +37,14 @@ func _ready() -> void:
 
 	TimeManager.minute_changed.connect(_on_minute_changed)
 	LoopManager.loop_started.connect(_on_loop_started)
-	LoopManager.knowledge_gained.connect(func(_f: String) -> void:
-		_refresh_work()
-		_hints.text = _hints_text())
+	LoopManager.knowledge_gained.connect(func(_f: String) -> void: _refresh_work())
 	WorkManager.progress_changed.connect(_refresh_work)
 	DialogueManager.dialogue_started.connect(_on_dialogue_started.unbind(1))
 	DialogueManager.dialogue_ended.connect(_on_dialogue_ended.unbind(1))
 	SettingsManager.changed.connect(func(key: String) -> void:
 		if key == "tutorials":
-			_hints.visible = SettingsManager.get_value("tutorials"))
-	_hints.visible = SettingsManager.get_value("tutorials")
+			_refresh_hints_visibility())
+	_refresh_hints_visibility()
 	_on_minute_changed(TimeManager.hour, TimeManager.minute)
 	_on_loop_started(LoopManager.loop_number)
 	_refresh_work()
@@ -98,6 +99,17 @@ func _build_top_left(root: Control) -> void:
 	column.add_child(_time)
 	_loop = UiStyle.label("", UiStyle.DIM)
 	column.add_child(_loop)
+	if Stamina.enabled:   # sin data/energy.json el juego no tiene energía
+		_energy = EnergyBar.new()
+		column.add_child(_energy)
+		_energy.set_fraction(Stamina.value / Stamina.max_value)
+		Stamina.changed.connect(func(value: float, max_value: float) -> void: _energy.set_fraction(value / max_value))
+		Stamina.exhausted.connect(func() -> void: _energy.set_exhausted(true))
+		Stamina.recovered.connect(func() -> void: _energy.set_exhausted(false))
+	if Wallet.enabled:   # sin data/economy.json el juego no tiene dinero
+		_money = UiStyle.label(tr("hud_money") % int(Wallet.value), UiStyle.DIM)
+		column.add_child(_money)
+		Wallet.changed.connect(func(value: float, _m: float) -> void: _money.text = tr("hud_money") % int(value))
 
 
 func _build_top_right(root: Control) -> void:
@@ -117,10 +129,10 @@ func _build_bottom_left(root: Control) -> void:
 	root.add_child(_work_chip)
 
 
-## Teclas que sirven ahora: la orden de trabajo solo si el juego tiene trabajo; el diario, cuando se lo tiene.
+## Teclas que sirven ahora: la orden de trabajo solo si el juego tiene trabajo y la orden ya llegó; el diario, cuando se lo tiene.
 func _hints_text() -> String:
 	var keys: Array[String] = ["hud_hint_interact"]
-	if not WorkManager.tasks.is_empty():
+	if not WorkManager.tasks.is_empty() and WorkManager.has_order():
 		keys.append("hud_hint_work")
 	if JournalManager.has_journal():
 		keys.append("hud_hint_journal")
@@ -155,18 +167,25 @@ func _on_loop_started(_loop_number: int) -> void:
 
 ## Durante un diálogo se ocultan las ayudas y el contador de trabajo (ahí va el retrato).
 func _on_dialogue_started() -> void:
+	_in_dialogue = true
 	_hints.visible = false
 	_work_chip.visible = false
 
 
 func _on_dialogue_ended() -> void:
-	_hints.visible = SettingsManager.get_value("tutorials")
+	_in_dialogue = false
+	_refresh_hints_visibility()
 	_refresh_work()
 
 
+func _refresh_hints_visibility() -> void:
+	_hints.visible = SettingsManager.get_value("tutorials") and not _in_dialogue
+
+
 func _refresh_work() -> void:
+	_hints.text = _hints_text()   # la ayuda de la orden aparece recién cuando la orden llegó
 	var has_order: bool = WorkManager.has_order()
-	_work_chip.visible = has_order
+	_work_chip.visible = has_order and not _in_dialogue   # el reloj y los flags también pasan durante una charla
 	if has_order:
 		# Con la entrega a la vista (Klara la dice al darle la orden) el plazo se siente: en la última hora, en rojo.
 		if not WorkManager.has_deadline:   # un juego sin plazo muestra solo el avance

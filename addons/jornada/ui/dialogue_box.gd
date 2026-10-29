@@ -5,7 +5,8 @@ extends CanvasLayer
 ## opción (canon 09 §12). E también avanza; eso lo procesa el jugador.
 
 const COLOR_OPTION: Color = Color(1.0, 0.804, 0.612)
-## Retratos de 64x64 (addons/jornada/tools/pixel/figures.py), a la izquierda de la caja. Los objetos examinables no tienen.
+## Retratos (addons/jornada/tools/pixel/portrait.py), a la izquierda de la caja y del tamaño de su imagen (96x96 en
+## Rabenholz, 64x64 en el juego de ejemplo). Los objetos examinables no tienen.
 const PORTRAIT_PATH: String = "res://assets/generated_assets/portraits/%s.png"
 const COLOR_OPTION_HOVER: Color = Color(0.945, 0.98, 0.933)
 
@@ -65,6 +66,8 @@ func _on_started(npc_id: String) -> void:
 	var path: String = PORTRAIT_PATH % npc_id
 	_portrait.texture = load(path) if ResourceLoader.exists(path) else null
 	_portrait.visible = _portrait.texture != null
+	if _portrait.texture != null:
+		_place_portrait(_portrait.texture.get_size())
 
 
 ## Mismo anclaje que la caja (abajo al centro), pegado a su borde izquierdo y apoyado en su base.
@@ -75,14 +78,17 @@ func _make_portrait() -> TextureRect:
 	rect.anchor_right = 0.5
 	rect.anchor_top = 1.0
 	rect.anchor_bottom = 1.0
-	rect.offset_left = _box.offset_left - 70.0
-	rect.offset_right = _box.offset_left - 6.0
-	rect.offset_top = _box.offset_bottom - 64.0
-	rect.offset_bottom = _box.offset_bottom
 	rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	rect.visible = false
 	add_child(rect)
 	return rect
+
+
+func _place_portrait(size: Vector2) -> void:
+	_portrait.offset_left = _box.offset_left - size.x - 6.0
+	_portrait.offset_right = _box.offset_left - 6.0
+	_portrait.offset_top = _box.offset_bottom - size.y
+	_portrait.offset_bottom = _box.offset_bottom
 
 
 func _on_line(speaker: String, text: String, stage_direction: String, options: Array, _has_next: bool) -> void:

@@ -38,10 +38,10 @@ func interact() -> void:
 
 ## Cruza la puerta (si no hay una cerradura de por medio, data/locks.json).
 func enter() -> void:
-	var closed: String = DoorLocks.closed_reason(ZoneManager.current_zone, target_zone)
-	if closed != "":
+	var closed: Array = DoorLocks.closed_message(ZoneManager.current_zone, target_zone)
+	if not closed.is_empty():
 		AudioManager.play_sfx("door_close", -8.0)
-		Toasts.show_key(closed)
+		Toasts.show_key(closed[0], closed[1])
 		return
 	AudioManager.play_sfx("door_open", -4.0)
 	ZoneManager.change_zone(target_zone)

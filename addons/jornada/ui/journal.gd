@@ -51,6 +51,15 @@ var _tab_ids: Array[int] = []
 var _picking: bool = false
 var _pick_index: int = 0
 var _pick_buttons: Array[Button] = []
+## Fichas: el dato que se está eligiendo ("" = la lista de datos), si al reconstruir hay que seguir eligiendo con el
+## teclado, y el filtro por la marca libre (Identification.FILTERS).
+var _ident_field: String = ""
+var _resume_pick: bool = false
+var _pick_via_key: bool = false
+var _ident_filter: String = "all"
+## El sello de las fichas confirmadas (encima del diario) y si ya se puede seguir.
+var _stamp_layer: Control = null
+var _stamp_ready: bool = false
 var _items: Array[Dictionary] = []
 var _rows: Array[Button] = []
 var _selected: int = 0
@@ -69,6 +78,14 @@ func _ready() -> void:
 	if Identification.enabled():
 		_tab_keys.append(Identification.config().get("tab_key", ""))
 		_tab_ids.append(Tab.IDENTIFY)
+	# data/game.json "journal.hidden_tabs": pestañas que el juego no muestra (evidence, people, deductions, map, roster,
+	# identify). Se sacan de la lista, así las teclas 1-9 siguen corridas.
+	var hidden: Array = GameConfig.value("journal.hidden_tabs", [])
+	for i in range(_tab_ids.size() - 1, -1, -1):
+		if String(Tab.keys()[_tab_ids[i]]).to_lower() in hidden:
+			_tab_ids.remove_at(i)
+			_tab_keys.remove_at(i)
+	Identification.confirmed.connect(_on_cards_confirmed)
 	Identification.changed.connect(func() -> void:
 		if _root.visible and _current_tab() == Tab.IDENTIFY:
 			_rebuild())
@@ -96,11 +113,20 @@ func _unhandled_input(event: InputEvent) -> void:
 func _input(event: InputEvent) -> void:
 	if not _root.visible:
 		return
+	if _stamp_layer != null:   # el sello de las fichas confirmadas: E, Esc o clic para seguir
+		get_viewport().set_input_as_handled()
+		if _stamp_ready and (event.is_action_pressed("interact") or event.is_action_pressed("ui_accept") \
+				or event.is_action_pressed("ui_cancel") or event.is_action_pressed("journal") \
+				or (event is InputEventMouseButton and event.pressed)):
+			_close_stamp()
+		return
 	if _picking and _pick_input(event):
 		get_viewport().set_input_as_handled()
 		return
 	if _current_tab() == Tab.IDENTIFY and (event.is_action_pressed("interact") or event.is_action_pressed("ui_accept")):
 		_start_picking()
+	elif _current_tab() == Tab.IDENTIFY and event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_V:
+		_cycle_ident_filter()
 	elif event.is_action_pressed("journal") or event.is_action_pressed("pause_menu") or event.is_action_pressed("ui_cancel"):
 		close()
 	elif event is InputEventKey and event.pressed and not event.echo and event.keycode in NUMBER_KEYS:
@@ -132,6 +158,7 @@ func open() -> void:
 func close() -> void:
 	if not _root.visible:
 		return
+	_close_stamp()
 	_mark_current_seen()
 	_root.visible = false
 	is_open = false
@@ -268,6 +295,8 @@ func _select(index: int) -> void:
 	if _items.is_empty():
 		return
 	_picking = false
+	if index != _selected:
+		_ident_field = ""
 	_selected = clampi(index, 0, _items.size() - 1)
 	_refresh_selection()
 
@@ -342,7 +371,8 @@ func _fill_detail(item: Dictionary) -> void:
 		head.add_theme_constant_override("separation", 6)
 		var portrait := TextureRect.new()
 		portrait.texture = item["portrait"]
-		portrait.custom_minimum_size = Vector2(64, 64) if item["portrait"].get_width() == 64 else Vector2(32, 64)
+		var tex_size: Vector2 = item["portrait"].get_size()
+		portrait.custom_minimum_size = tex_size if tex_size.x >= 48.0 else Vector2(32, 64)   # retrato, o el sprite al doble
 		portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		portrait.modulate = item.get("portrait_color", Color.WHITE)
@@ -498,7 +528,7 @@ func _sheet_for(person: Dictionary) -> Texture2D:
 	return load(path)
 
 
-## Retrato de 64x64 si el personaje tiene uno; si no, el sprite de frente.
+## El retrato si el personaje tiene uno (de su tamaño); si no, el sprite de frente.
 func _portrait_full(person: Dictionary) -> Texture2D:
 	var portrait_path: String = PORTRAITS_DIR % person.get("sheet", "")
 	if person.get("sheet", "") != "" and ResourceLoader.exists(portrait_path):
@@ -660,7 +690,8 @@ func _build_roster() -> void:
 
 # --- 6 · Identificar ----------------------------------------------------------------------------
 
-## Fichas de data/identify.json por grupo: la cara, el nombre que puso el jugador (o «?») y si ya está confirmado.
+## Fichas de data/identify.json por grupo: la cara, lo que anotó el jugador (o «?»), su marca y si ya está confirmada.
+## Arriba, el filtro por la marca libre (clic o V).
 func _build_identify() -> void:
 	var cfg: Dictionary = Identification.config()
 	var done: Array[int] = Identification.progress()
@@ -668,26 +699,42 @@ func _build_identify() -> void:
 	if not Identification.is_available():
 		_list.add_child(_wrapped(tr(cfg.get("empty_key", "ui_journal_ident_empty")), UiStyle.DIM))
 		return
+	var filter := UiStyle.button(tr("ui_journal_ident_filter") % tr("ui_journal_ident_filter_" + _ident_filter), true)
+	filter.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	filter.pressed.connect(_cycle_ident_filter)
+	_list.add_child(filter)
 	for group: Dictionary in Identification.visible_groups():
-		var group_cards: Array = Identification.cards(group["id"])
+		var group_cards: Array = Identification.visible_cards(group["id"])
 		var group_done: int = group_cards.filter(func(c: Dictionary) -> bool: return Identification.is_confirmed(c["id"])).size()
+		var shown: Array = group_cards.filter(func(c: Dictionary) -> bool: return Identification.passes_filter(c["id"], _ident_filter))
+		if shown.is_empty():
+			continue
 		_add_header("%s  %d/%d" % [tr(group["title_key"]), group_done, group_cards.size()])
-		for c: Dictionary in group_cards:
+		for c: Dictionary in shown:
 			_add_row(_identify_item(c, group))
 
 
+func _cycle_ident_filter() -> void:
+	var filters: Array[String] = Identification.FILTERS
+	_ident_filter = filters[(filters.find(_ident_filter) + 1) % filters.size()]
+	_selected = 0
+	_rebuild()
+
+
 func _identify_item(c: Dictionary, group: Dictionary) -> Dictionary:
-	var guess: String = Identification.guess_of(c["id"])
+	var noted: String = Identification.summary(c["id"])
 	var is_done: bool = Identification.is_confirmed(c["id"])
-	var shown: String = Identification.name_text(guess) if guess != "" else "?"
+	var mark: String = Identification.mark_of(c["id"])
+	var shown: String = noted if noted != "" else "?"
 	var lines: Array[Dictionary] = [{"text": tr(c.get("look_key", ""))}]
 	for clue_key: String in Identification.clues(c["id"]):
 		lines.append({"text": "· " + tr(clue_key)})
 	return {
-		"card": c["id"], "text": ("[x] " if is_done else "") + shown,
-		"color": UiStyle.OK if is_done else (UiStyle.TEXT if guess != "" else UiStyle.DIM),
+		"card": c["id"],
+		"text": ("[x] " if is_done else "") + shown + ("  (" + tr("ui_journal_ident_mark_" + mark) + ")" if mark != "" else ""),
+		"color": UiStyle.OK if is_done else (UiStyle.TEXT if noted != "" else UiStyle.DIM),
 		"icon": _face_icon(c.get("portrait", "")), "portrait": _card_portrait(c.get("portrait", "")),
-		"title": shown if guess != "" else tr("ui_journal_ident_unknown"),
+		"title": shown if noted != "" else tr("ui_journal_ident_unknown"),
 		"subtitle": [{"text": tr(group["title_key"]), "color": UiStyle.ACCENT},
 				{"text": tr("ui_journal_ident_confirmed") if is_done else tr("ui_journal_ident_pending"),
 				"color": UiStyle.OK if is_done else UiStyle.DIM}],
@@ -695,41 +742,81 @@ func _identify_item(c: Dictionary, group: Dictionary) -> Dictionary:
 	}
 
 
-## Debajo de la ficha: la lista de nombres para elegir (con el mouse o con E y las flechas).
+## Debajo de la ficha: un botón por dato («Apellido: Gruber») y la marca; al elegir un dato, sus opciones. Si la ficha
+## pide un solo dato, las opciones van directo. Con el mouse o con E y las flechas.
 func _fill_identify_detail(card_id: String) -> void:
 	_pick_buttons.clear()
 	if Identification.is_confirmed(card_id):
 		return
 	_detail_panel.add_child(_wrapped(tr("ui_journal_ident_hint"), UiStyle.DIM))
-	var names: Array = Identification.names_available().filter(func(n: Dictionary) -> bool:
-		for other: String in Identification.guesses:
-			if Identification.guesses[other] == n["id"] and Identification.is_confirmed(other):
-				return false   # ya está confirmado en otra ficha
-		return true)
-	if names.is_empty():
+	var fields: Array = Identification.fields_of(card_id)
+	if fields.size() == 1:
+		_ident_field = fields[0]
+	if _ident_field != "" and _ident_field in fields:
+		_fill_ident_options(card_id, _ident_field, fields.size() > 1)
+	else:
+		_ident_field = ""
+		for field_id: String in fields:
+			var value: String = Identification.option_text(field_id, Identification.guess_of(card_id, field_id))
+			var label: String = "%s: %s" % [tr(Identification.field(field_id).get("title_key", "")), value if value != "" else "?"]
+			var chosen: String = field_id
+			_add_pick_button(label, false, func() -> void:
+				_ident_field = chosen
+				_resume_pick = _pick_via_key
+				_refresh_selection())
+		var mark: String = Identification.mark_of(card_id)
+		_add_pick_button(tr("ui_journal_ident_mark") % tr("ui_journal_ident_mark_" + (mark if mark != "" else "none")), false,
+				func() -> void:
+					_resume_pick = _pick_via_key
+					Identification.cycle_mark(card_id))
+		if Identification.guesses.has(card_id):
+			_add_pick_button(tr("ui_journal_ident_clear"), false, func() -> void: Identification.clear(card_id))
+	if _resume_pick:
+		_resume_pick = false
+		_start_picking()
+
+
+## Las opciones de un dato (las que el jugador ya puede usar). `back`: con un botón para volver a los datos.
+func _fill_ident_options(card_id: String, field_id: String, back: bool) -> void:
+	var options: Array = Identification.options_available(field_id).filter(func(o: Dictionary) -> bool:
+		return not Identification.is_used_up(field_id, o["id"]))   # lo confirmado ya no se ofrece
+	var title: String = tr(Identification.field(field_id).get("title_key", ""))
+	if back:
+		_detail_panel.add_child(_wrapped(title, UiStyle.ACCENT))
+	if options.is_empty():
 		_detail_panel.add_child(_wrapped(tr("ui_journal_ident_no_names"), UiStyle.DIM))
-		return
-	var current: String = Identification.guess_of(card_id)
-	for n: Dictionary in names:
-		var label: String = tr(n["name_key"])
-		var elsewhere: bool = Identification.guesses.values().has(n["id"]) and current != n["id"]
+	var current: String = Identification.guess_of(card_id, field_id)
+	for o: Dictionary in options:
+		var label: String = tr(o["key"])
+		var elsewhere: bool = Identification.field(field_id).get("unique", false) and current != o["id"] \
+				and Identification.guesses.keys().any(func(k: String) -> bool: return Identification.guess_of(k, field_id) == o["id"])
 		if elsewhere:
 			label += "  " + tr("ui_journal_ident_elsewhere")
-		var button := UiStyle.button(label, true)
-		button.toggle_mode = true
-		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		button.button_pressed = n["id"] == current
+		var option_id: String = o["id"]
+		var button: Button = _add_pick_button(label, o["id"] == current, func() -> void:
+			_ident_field = ""
+			_resume_pick = _pick_via_key and back
+			Identification.guess(card_id, option_id, field_id))
 		if elsewhere:
 			button.add_theme_color_override("font_color", UiStyle.DIM)
-		var name_id: String = n["id"]
-		button.pressed.connect(func() -> void: Identification.guess(card_id, name_id))
-		_detail_panel.add_child(button)
-		_pick_buttons.append(button)
-	if current != "":
-		var clear := UiStyle.button(tr("ui_journal_ident_clear"), true)
-		clear.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		clear.pressed.connect(func() -> void: Identification.clear(card_id))
-		_detail_panel.add_child(clear)
+	if back:
+		_add_pick_button(tr("ui_journal_ident_back"), false, func() -> void:
+			_ident_field = ""
+			_resume_pick = _pick_via_key
+			_refresh_selection())
+	elif current != "":
+		_add_pick_button(tr("ui_journal_ident_clear"), false, func() -> void: Identification.clear(card_id, field_id))
+
+
+func _add_pick_button(label: String, pressed: bool, action: Callable) -> Button:
+	var button := UiStyle.button(label, true)
+	button.toggle_mode = true
+	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.button_pressed = pressed
+	button.pressed.connect(action)
+	_detail_panel.add_child(button)
+	_pick_buttons.append(button)
+	return button
 
 
 func _start_picking() -> void:
@@ -740,7 +827,8 @@ func _start_picking() -> void:
 	_show_pick()
 
 
-## Con el teclado, eligiendo un nombre: arriba/abajo, E (o Enter) lo pone, Esc vuelve a la lista. true = lo usó.
+## Con el teclado: arriba/abajo, E (o Enter) elige, Esc vuelve (de las opciones a los datos; de los datos, a la lista).
+## true = lo usó.
 func _pick_input(event: InputEvent) -> bool:
 	if event.is_action_pressed("move_up", true):
 		_pick_index = (_pick_index + _pick_buttons.size() - 1) % _pick_buttons.size()
@@ -748,10 +836,16 @@ func _pick_input(event: InputEvent) -> bool:
 		_pick_index = (_pick_index + 1) % _pick_buttons.size()
 	elif event.is_action_pressed("interact") or event.is_action_pressed("ui_accept"):
 		_picking = false
+		_pick_via_key = true   # el botón decide si se sigue eligiendo (al reconstruirse, _resume_pick)
 		_pick_buttons[_pick_index].pressed.emit()
+		_pick_via_key = false
 		return true
 	elif event.is_action_pressed("ui_cancel") or event.is_action_pressed("journal") or event.is_action_pressed("pause_menu"):
-		_picking = false
+		var item: Dictionary = _items[_selected] if _selected < _items.size() else {}
+		var several: bool = item.has("card") and Identification.fields_of(item["card"]).size() > 1
+		_picking = _ident_field != "" and several
+		_resume_pick = _picking
+		_ident_field = ""
 		_refresh_selection()
 		return true
 	else:
@@ -764,6 +858,81 @@ func _show_pick() -> void:
 	for i in _pick_buttons.size():
 		_pick_buttons[i].button_pressed = i == _pick_index
 	_detail_scroll.ensure_control_visible(_pick_buttons[_pick_index])
+
+
+## Tres fichas confirmadas: el diario se oscurece, entran las fichas una por una (retrato y lo anotado) y cae el sello,
+## con el mismo sonido que una deducción. Se sigue con E, Esc o clic.
+func _on_cards_confirmed(card_ids: Array) -> void:
+	if not _root.visible or card_ids.is_empty():
+		return
+	_close_stamp()
+	_picking = false
+	_stamp_ready = false
+	_stamp_layer = Control.new()
+	_stamp_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_stamp_layer.mouse_filter = Control.MOUSE_FILTER_STOP
+	_root.add_child(_stamp_layer)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0.03, 0.0)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_stamp_layer.add_child(dim)
+	var tween: Tween = create_tween().set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)   # el diario pausa el juego
+	tween.tween_property(dim, "color:a", 0.78, 0.35)
+	var width: float = 168.0
+	var gap: float = 12.0
+	var left: float = (640.0 - card_ids.size() * width - (card_ids.size() - 1) * gap) / 2.0
+	for i in card_ids.size():
+		var c: Dictionary = Identification.card(card_ids[i])
+		var panel := PanelContainer.new()
+		panel.add_theme_stylebox_override("panel", UiStyle.panel(true))
+		panel.custom_minimum_size = Vector2(width, 0)
+		panel.position = Vector2(left + i * (width + gap), 104.0)
+		panel.modulate.a = 0.0
+		var box := VBoxContainer.new()
+		box.alignment = BoxContainer.ALIGNMENT_CENTER
+		var face := TextureRect.new()
+		face.texture = _card_portrait(c.get("portrait", ""))
+		face.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+		face.custom_minimum_size = face.texture.get_size() if face.texture != null else Vector2(64, 64)
+		box.add_child(face)
+		var name_label := UiStyle.label(Identification.summary(card_ids[i]), UiStyle.OK)
+		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		name_label.custom_minimum_size = Vector2(width - 12.0, 0)
+		box.add_child(name_label)
+		panel.add_child(box)
+		_stamp_layer.add_child(panel)
+		tween.tween_property(panel, "modulate:a", 1.0, 0.2)
+		tween.parallel().tween_property(panel, "position:y", 104.0, 0.2).from(84.0)
+		tween.tween_interval(0.15)
+	var stamp := UiStyle.label(tr("ui_journal_ident_stamp"), UiStyle.BAD)
+	stamp.add_theme_font_size_override("font_size", 22)
+	stamp.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	stamp.custom_minimum_size = Vector2(640, 0)
+	stamp.position = Vector2(0, 60.0)
+	stamp.pivot_offset = Vector2(320, 12)
+	stamp.modulate.a = 0.0
+	_stamp_layer.add_child(stamp)
+	var hint := UiStyle.label(tr("ui_deduction_continue"), UiStyle.DIM)
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.custom_minimum_size = Vector2(640, 0)
+	hint.position = Vector2(0, 300.0)
+	hint.modulate.a = 0.0
+	_stamp_layer.add_child(hint)
+	tween.tween_callback(func() -> void: AudioManager.play_sfx("medallion_activate", -2.0))
+	tween.tween_property(stamp, "modulate:a", 1.0, 0.05)
+	tween.parallel().tween_property(stamp, "scale", Vector2.ONE, 0.14).from(Vector2(1.6, 1.6))
+	tween.tween_interval(0.6)
+	tween.tween_callback(func() -> void: _stamp_ready = true)
+	tween.tween_property(hint, "modulate:a", 1.0, 0.4)
+
+
+func _close_stamp() -> void:
+	if _stamp_layer != null:
+		_stamp_layer.queue_free()
+		_stamp_layer = null
+	_stamp_ready = false
 
 
 func _card_portrait(path: String) -> Texture2D:

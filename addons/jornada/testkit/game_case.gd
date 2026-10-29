@@ -17,6 +17,8 @@ func before_each() -> void:
 	tm = autoload("TimeManager")
 	Engine.time_scale = 1.0
 	tree.paused = false
+	if tree.root.has_node("Notices"):   # un cartel pausa el juego a mitad de la prueba: la que lo quiere lo prende
+		tree.root.get_node("Notices").set("enabled", false)
 	lm.reset_all()
 	jm.reset()
 

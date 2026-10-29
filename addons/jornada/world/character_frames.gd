@@ -61,6 +61,14 @@ static func build(sheet: Texture2D) -> SpriteFrames:
 			frames.set_animation_speed(run, RUN_FPS)
 			for i in RUN_FRAMES:
 				frames.add_frame(run, _cell(sheet, diag_from + DIAG_VIEWS.size() * FRAMES_PER_VIEW + d * RUN_FRAMES + i))
+	# Sentado: <id>_sit.png al lado de la hoja (addons/jornada/tools/pixel/sit.py), un cuadro por vista.
+	var sit_path: String = sheet.resource_path.replace("_sheet.png", "_sit.png")
+	if sit_path != sheet.resource_path and ResourceLoader.exists(sit_path):
+		var sit_sheet: Texture2D = load(sit_path)
+		for v in VIEWS.size():
+			var sit := StringName("sit_" + VIEWS[v])
+			frames.add_animation(sit)
+			frames.add_frame(sit, _cell(sit_sheet, v))
 	return frames
 
 
@@ -84,7 +92,15 @@ static func view_for(facing: Vector2, diagonals: bool = false) -> String:
 ## Aplica animación y orientación a un AnimatedSprite2D.
 ## `speed` en px/s (0 = quieto). Ajusta speed_scale para que el paso acompañe el desplazamiento.
 ## `running`: usa la carrera si la hoja la tiene (si no, camina más rápido).
-static func apply(sprite: AnimatedSprite2D, facing: Vector2, speed: float, running: bool = false) -> void:
+## `sitting`: quieto y sentado (cuadro de sentado si la hoja lo tiene; sin diagonales).
+static func apply(sprite: AnimatedSprite2D, facing: Vector2, speed: float, running: bool = false, sitting: bool = false) -> void:
+	if sitting and speed <= 0.5 and sprite.sprite_frames.has_animation(&"sit_down"):
+		var sit_view: String = view_for(facing)
+		sprite.flip_h = sit_view == "side" and facing.x < 0.0
+		if sprite.animation != StringName("sit_" + sit_view):
+			sprite.play(StringName("sit_" + sit_view))
+		sprite.speed_scale = 1.0
+		return
 	var view: String = view_for(facing, sprite.sprite_frames.has_animation(&"idle_ddown"))
 	sprite.flip_h = view in ["side", "ddown", "dup"] and facing.x < 0.0
 	var anim := StringName(("walk_" if speed > 0.5 else "idle_") + view)

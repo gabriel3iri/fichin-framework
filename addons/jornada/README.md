@@ -18,7 +18,7 @@ vecinos y tres días en una panadería.
    `GameConfig` (core/game_config.gd, siempre el primero), `TimeManager`, `SettingsManager`, `LoopManager`,
    `JournalManager`, `DeductionSystem`, `Toasts`, `GameManager`, `DialogueManager`, `ZoneManager`, `TimedEvents`,
    `WorkManager`, `AudioManager`, `SaveManager`, `WorldEffects`, `WitnessManager`, `AnnoyanceSystem`, `PrivateRooms`,
-   `ChatterSystem`, `Identification`, `Sightings`, `SearchSystem` (rutas en `core/`, `social/`, `world/` y `work/`; el `project.godot` del ejemplo sirve de plantilla).
+   `ChatterSystem`, `Identification`, `Sightings`, `SearchSystem`, `Notices`, `EscortSystem`, `Stamina`, `Speeches`, `Wallet` (rutas en `core/`, `social/`, `world/` y `work/`; el `project.godot` del ejemplo sirve de plantilla).
 3. Traducciones: `addons/jornada/translations/jornada.es.translation` (textos de la UI del framework) y las del
    juego. Tema: `addons/jornada/ui/skin/theme.tres`.
 4. Acciones de entrada: `move_left`, `move_right`, `move_up`, `move_down`, `run`, `interact`, `pause_menu`,
@@ -41,7 +41,7 @@ vecinos y tres días en una panadería.
 Mecánicas opcionales: si el archivo no existe, el juego no la usa y no hay error. `data/events.json` (eventos a hora
 fija), `work.json` (orden de trabajo y minijuegos), `audio.json`, `lighting.json`, `weather.json`, `witness.json`
 (lo que se anota por ver a alguien), `locks.json` (puertas con llave), `private_rooms.json`, `annoyance.json`,
-`barks.json` (frases sueltas y charlas), `search.json` (alguien busca al jugador si va atrasado con el trabajo: llega solo adonde lo vio un testigo, ver `social/search_system.gd`), `inspectables.json` (objetos examinables), `buildings.json` (edificios
+`barks.json` (frases sueltas y charlas), `energy.json` (energía del personaje: correr la gasta, la comida la llena, ver `core/stamina.gd`), `economy.json` (el dinero del día: viático al recibir la orden, pago por tarea y opciones de diálogo con `"cost"`, y con `"cant_afford"` la que aparece cuando no alcanza, ver `core/wallet.gd`), `relations.json` (quién sabe de quién y cómo lo cuenta al «preguntar por alguien»: grupos, profundidad, lazos, voces y condiciones; las frases van en el CSV con variantes por persona, por quien contesta, por voz y por tipo de lazo, ver `social/relations.gd` y `DialogueManager._about_line`), `speeches.json` (asientos en los objetos y alguien que le habla a la sala; escucharlo sentado da flags y lo trae a hablar, ver `social/speeches.gd`), `escort.json` (quien da un encargo lleva al jugador y lo espera, lo llama, lo busca o lo lleva si se atrasa, ver `social/escort_system.gd`), `game.json → notices` (carteles que frenan el juego al ganar un flag, ver `core/notices.gd`), `search.json` (alguien busca al jugador si va atrasado con el trabajo: llega solo adonde lo vio un testigo, ver `social/search_system.gd`), `inspectables.json` (objetos examinables), `buildings.json` (edificios
 dibujados enteros).
 
 ### Claves de texto que pone cada juego
@@ -55,6 +55,7 @@ Las de la UI genérica vienen en `translations/jornada.csv` y el juego no las re
 - **Menú**: `ui_menu_subtitle`, `ui_menu_place`, `ui_menu_version` y `ui_menu_continue_tip` (`%d` jornada, `%s` cuándo se guardó).
 - **Diario y trabajo**: `toast_journal_hint`, `ui_journal_seal_hint`, `work_panel_title`, `work_pay`,
   `toast_work_failed` y `toast_work_late`.
+- **Dinero** (si el juego trae `data/economy.json`): `hud_money` (`%d`, el contador bajo la barra de energía).
 - Las que nombre `game.json` (`intro`, `thoughts`) y los datos (diálogos, eventos, frases).
 
 `DataValidator` (corre al cargar la partida en debug) revisa claves, flags, horarios, diálogos y celdas.
@@ -71,8 +72,11 @@ Las de la UI genérica vienen en `translations/jornada.csv` y el juego no las re
 - Horarios: `python3 addons/jornada/tools/schedule_table.py [--root <proyecto>] [--check]` escribe la tabla
   `docs/HORARIOS.md` desde `data/schedules/*.json` y revisa orden, zonas y choques de celda. Para traer a un NPC hasta
   el jugador sin que aparezca de golpe: `NpcActor.approach_player()` (y `end_detour()` al terminar).
-- Identificar gente (`data/identify.json`, `Identification`): fichas con cara y descripción, nombres que desbloquean
-  flags, confirmación de a `batch` aciertos sin decir cuál está mal (al estilo Obra Dinn); pestaña propia en el diario.
+- Fichas para identificar gente (`data/identify.json`, `Identification`): una ficha por persona con varios datos
+  (`fields`: nombre, apellido, ocupación... cada grupo dice cuáles pide); las opciones se habilitan con flags o con
+  lo que el diario sabe del nombre de alguien (`journal_bit`); una ficha con `person` aparece cuando el jugador vio a
+  esa persona. Se confirman de a `batch` fichas enteras bien sin decir cuál está mal (al estilo Obra Dinn); marca
+  libre «creo que vive / murió» que filtra la lista; pestaña propia en el diario.
 - Minijuegos de trabajo: extender `Minigame` (`work/minigame.gd`) y nombrar el script en `work.json`.
 
 ## Mundo
@@ -95,6 +99,13 @@ escena de la partida a partir de los datos (repetir con `--import` en el medio s
   física; el jugador tampoco se interpola), hace su propio límite contra los bordes del mapa (centra las zonas más
   chicas que la pantalla) y redondea su posición para que el mundo se dibuje siempre desde un píxel entero. Con
   zooms no enteros (1,5) es lo que evita que todo tiemble un píxel. Zooms en `PlayerCamera.ZOOMS` (tecla Z).
+- Lo que se dice y se piensa sale en globos (`ui/speech_bubbles.gd`, en pantalla y en píxeles enteros): no se pisan
+  ni se salen de la pantalla (si no hay lugar, el de menos prioridad espera). `NpcActor.show_bark(texto, color,
+  segundos, style)`: `"speech"` (con color `UiStyle.ACCENT`, `"accent"`: le hablan al jugador) o `"address"` (recita
+  para un público); `PlayerController.think()` usa `"thought"` (nube con burbujitas). Ritmo y duración del barullo:
+  `barks.json` → `settings` (claves en `ChatterSystem.DEFAULTS`; `settings.zones.<zona>` para un lugar con más
+  barullo); una línea puede llevar `zones` (solo ahí) y `names` (`{npc: "first"|"last"|"full"}`: quien la oye de
+  cerca aprende el nombre de esa persona si está a la vista).
 - Los nombres sobre la cabeza de cada personaje salen solo al pasar el mouse, en un recuadro negro con borde marrón
   (`UiStyle.name_tag()`), distinto de los diálogos. La N los muestra todos mientras dura la sesión (depuración).
 

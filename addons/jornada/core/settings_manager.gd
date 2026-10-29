@@ -10,7 +10,7 @@ const TEXT_SPEEDS: Array[float] = [35.0, 70.0, 140.0, 100000.0]    # caracteres 
 const TIME_SCALES: Array[float] = [0.667, 1.0, 1.333]              # 40x / 60x / 80x (canon 09 §11)
 const DEFAULTS: Dictionary = {
 	"master": 0.8, "music": 0.7, "sfx": 0.8, "ambient": 0.6,
-	"fullscreen": false, "vsync": true, "language": "es",
+	"fullscreen": true, "vsync": true, "language": "es",
 	"text_speed": 1, "tutorials": true, "time_scale": 1, "debug_name_tags": false, "camera_zoom": 1, "seen_journal_hint": false,
 }
 
@@ -80,9 +80,11 @@ func _load() -> void:
 			values[key] = cfg.get_value("settings", key, DEFAULTS[key])
 
 
+## Guarda solo lo que el jugador cambió: si después cambia un valor por defecto (la pantalla completa), le llega a
+## quien nunca lo tocó.
 func _save() -> void:
 	var cfg := ConfigFile.new()
 	for key: String in values:
-		if key not in SESSION_ONLY:
+		if key not in SESSION_ONLY and values[key] != DEFAULTS.get(key):
 			cfg.set_value("settings", key, values[key])
 	cfg.save(PATH)

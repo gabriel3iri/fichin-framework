@@ -29,6 +29,8 @@ const FIRST: int = 1
 const LAST: int = 2
 const FULL: int = 3
 var names: Dictionary = {}
+## A quién le oyó decir qué hace (la ocupación): lo primero que cuenta un vecino de otro. Persiste, como los nombres.
+var roles_heard: Array[String] = []
 ## Lo escrito en el diario: flags y, por persona, {"names": bits anotados, "met": si habló con ella}.
 var noted_flags: Array[String] = []
 var noted_people: Dictionary = {}
@@ -108,6 +110,12 @@ func learn_name(person_id: String, bits: int) -> void:
 		_note_person(person_id)
 
 
+func learn_role(person_id: String) -> void:
+	if not person_id in roles_heard:
+		roles_heard.append(person_id)
+		changed.emit()
+
+
 ## Cómo se lo nombra según lo que recuerda: la descripción, el nombre, el apellido ("el alcalde Brandt") o los dos.
 func display_name(person_id: String) -> String:
 	return _name_for(person_id, name_bits(person_id))
@@ -182,6 +190,7 @@ func _note_flag(flag: String) -> void:
 func reset() -> void:
 	met.clear()
 	names.clear()
+	roles_heard.clear()
 	noted_flags.clear()
 	noted_people.clear()
 	journal_surprise_done = false
@@ -222,6 +231,7 @@ func _is_listed(flag: String) -> bool:
 
 func to_dict() -> Dictionary:
 	var d: Dictionary = {"met": met, "visited": visited, "sightings": sightings, "seen_flags": seen_flags, "names": names,
+			"roles_heard": roles_heard,
 			"noted_flags": noted_flags, "noted_people": noted_people, "journal_surprise_done": journal_surprise_done}
 	return d.duplicate(true)   # copias: si después se resetea el diario, lo guardado no cambia
 
@@ -232,6 +242,7 @@ func from_dict(d: Dictionary) -> void:
 	for pid: String in d.get("names", {}):
 		var level: int = int(d["names"][pid])
 		names[pid] = FULL if level >= 2 else level   # partidas viejas: 1 = nombre, 2 = nombre y apellido
+	roles_heard.assign(d.get("roles_heard", []))
 	noted_flags.assign(d.get("noted_flags", []))
 	noted_people = (d.get("noted_people", {}) as Dictionary).duplicate(true)
 	journal_surprise_done = bool(d.get("journal_surprise_done", false))

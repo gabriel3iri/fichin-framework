@@ -15,6 +15,7 @@
 "toast_journal_hint","Tiene una libreta: lo que anota está ahí. Ábrala con J.","",""
 "work_panel_title","TAREAS","",""
 "work_pay","Jornal: %d pesetas","",""
+"hud_money","%d pesetas","",""
 "toast_work_failed","No terminó las tareas del día.","",""
 "toast_work_late","Se pasó la hora.","",""
 "ui_journal_seal_hint","","",""

@@ -28,6 +28,12 @@ static func validate_all() -> int:
 	errors += _validate_barks(csv_keys)
 	errors += _validate_identify(csv_keys)
 	errors += _validate_search(csv_keys)
+	errors += _validate_escort(csv_keys)
+	errors += _validate_notices(csv_keys)
+	errors += _validate_music()
+	errors += _validate_energy()
+	errors += _validate_relations(csv_keys)
+	errors += _validate_speeches(csv_keys)
 	errors += _validate_script_keys(csv_keys, "res://scripts")
 	errors += _validate_script_keys(csv_keys, "res://addons/jornada")
 	if errors > 0:
@@ -385,7 +391,8 @@ static func _validate_search(csv_keys: Dictionary) -> int:
 	return errors
 
 
-## data/identify.json (Identification): grupos, nombres y fichas coherentes, flags que existen, textos y retratos.
+## data/identify.json (Identification): datos, opciones, grupos y fichas coherentes; flags, personas, textos y retratos
+## que existen; cada ficha responde todos los datos de su grupo con opciones que existen (y las `unique`, una vez).
 static func _validate_identify(csv_keys: Dictionary) -> int:
 	var cfg: Dictionary = GameConfig.read_data("res://data/identify.json")
 	if cfg.is_empty():
@@ -395,32 +402,62 @@ static func _validate_identify(csv_keys: Dictionary) -> int:
 	for key: String in ["tab_key", "empty_key", "toast_key", "seen_toast_key"]:
 		if cfg.has(key):
 			errors += _check_key(cfg[key], csv_keys, where)
-	var flags: Array = [cfg.get("complete_flag", "")].filter(func(f: String) -> bool: return f != "")
-	errors += _check_flags(flags, where)
-	errors += _check_no_deductions([cfg.get("complete_flag", "")].filter(func(f: String) -> bool: return f != ""), where)
-	var group_ids: Array = []
+	var closing: Array = [cfg.get("complete_flag", "")]
+	for done: Dictionary in cfg.get("complete_flags", []):
+		closing.append(done["flag"])
 	for group: Dictionary in cfg.get("groups", []):
-		group_ids.append(group["id"])
+		closing.append(group.get("complete_flag", ""))
+	closing = closing.filter(func(f: String) -> bool: return f != "")
+	errors += _check_flags(closing, where)
+	errors += _check_no_deductions(closing, where)
+	var people: Array = JournalManager.people().map(func(p: Dictionary) -> String: return p["id"])
+	var options: Dictionary = {}   # dato -> ids de sus opciones
+	for field_id: String in cfg.get("fields", {}):
+		var def: Dictionary = cfg["fields"][field_id]
+		var here: String = "%s dato %s" % [where, field_id]
+		errors += _check_key(def.get("title_key", ""), csv_keys, here)
+		if not str(def.get("journal_bit", "")) in ["", "first", "last"]:
+			push_error("%s: journal_bit tiene que ser first o last" % here)
+			errors += 1
+		options[field_id] = []
+		for o: Dictionary in def.get("options", []):
+			options[field_id].append(o["id"])
+			errors += _check_key(o["key"], csv_keys, here)
+			errors += _check_flags(o.get("unlock_any", []), here + " " + o["id"])
+			for pid: String in o.get("people", []):
+				if not pid in people:
+					push_error("%s %s: '%s' no está en el diario" % [here, o["id"], pid])
+					errors += 1
+	var group_fields: Dictionary = {}
+	for group: Dictionary in cfg.get("groups", []):
+		group_fields[group["id"]] = group.get("fields", ["name"])
 		errors += _check_key(group["title_key"], csv_keys, where)
 		errors += _check_flags(group.get("show_any", []), where + " " + group["id"])
-	var name_ids: Array = []
-	for n: Dictionary in cfg.get("names", []):
-		name_ids.append(n["id"])
-		errors += _check_key(n["name_key"], csv_keys, where)
-		errors += _check_flags(n.get("unlock_any", []), where + " " + n["id"])
-	var answers: Array = []
+		for field_id: String in group_fields[group["id"]]:
+			if not options.has(field_id):
+				push_error("%s grupo %s: el dato '%s' no está en fields" % [where, group["id"], field_id])
+				errors += 1
+	var used: Dictionary = {}   # "dato:opción" de los datos unique
 	for c: Dictionary in cfg.get("cards", []):
 		var here: String = "%s ficha %s" % [where, c["id"]]
-		if not c["group"] in group_ids:
+		if not group_fields.has(c["group"]):
 			push_error("%s: el grupo '%s' no existe" % [here, c["group"]])
 			errors += 1
-		if not c["answer"] in name_ids:
-			push_error("%s: la respuesta '%s' no está en names" % [here, c["answer"]])
+			continue
+		var answer: Dictionary = c.get("answer", {})
+		for field_id: String in group_fields[c["group"]]:
+			var value: String = str(answer.get(field_id, ""))
+			if not value in options.get(field_id, []):
+				push_error("%s: la respuesta de '%s' ('%s') no es una opción" % [here, field_id, value])
+				errors += 1
+			elif cfg["fields"][field_id].get("unique", false):
+				if used.has(field_id + ":" + value):
+					push_error("%s: '%s' es la respuesta de dos fichas" % [here, value])
+					errors += 1
+				used[field_id + ":" + value] = true
+		if c.has("person") and not c["person"] in people:
+			push_error("%s: la persona '%s' no está en el diario" % [here, c["person"]])
 			errors += 1
-		elif c["answer"] in answers:
-			push_error("%s: el nombre '%s' es la respuesta de dos fichas" % [here, c["answer"]])
-			errors += 1
-		answers.append(c["answer"])
 		if not ResourceLoader.exists(c.get("portrait", "")):
 			push_error("%s: no existe el retrato %s" % [here, c.get("portrait", "")])
 			errors += 1
@@ -430,6 +467,169 @@ static func _validate_identify(csv_keys: Dictionary) -> int:
 			errors += _check_flags(clue.get("requires_any", []), here)
 		if c.has("flag"):
 			errors += _check_flags([c["flag"]], here)
+	return errors
+
+
+## data/escort.json: quien escolta existe y tiene las entradas, el destino y donde aparece el jugador se pueden pisar, el flag
+## de arranque existe y todos los textos están en el CSV.
+static func _validate_escort(csv_keys: Dictionary) -> int:
+	var cfg: Dictionary = GameConfig.read_data("res://data/escort.json")
+	if cfg.is_empty():
+		return 0
+	var errors: int = 0
+	var where: String = "escort.json"
+	var npc: String = str(cfg.get("npc", ""))
+	if not FileAccess.file_exists("res://data/schedules/%s.json" % npc) or not DialogueManager.has_dialogue(npc):
+		push_error("%s: '%s' necesita horario y diálogo" % [where, npc])
+		return 1
+	var entries: Array = DialogueManager.entry_ids(npc)
+	var wanted: Array = (cfg.get("nag_entries", []) as Array) + [cfg.get("force_entry", ""), cfg.get("arrive_entry", ""), cfg.get("arrive_forced_entry", "")]
+	for entry: String in wanted:
+		if not entries.has(entry):
+			push_error("%s: el diálogo de %s no tiene la entrada '%s'" % [where, npc, entry])
+			errors += 1
+	errors += _check_flags([cfg.get("start", {}).get("flag", "")], where)
+	for zone: String in (cfg.get("start", {}).get("from_zones", []) as Array) + [cfg.get("destination", {}).get("zone", "")]:
+		if not ZoneManager.has_zone(zone):
+			push_error("%s: la zona '%s' no existe" % [where, zone])
+			errors += 1
+	var dest_zone: String = str(cfg.get("destination", {}).get("zone", ""))
+	if ZoneManager.has_zone(dest_zone):
+		for field: String in ["tile", "player_tile"]:
+			var tile: Array = cfg["destination"].get(field, [])
+			if tile.size() != 2 or ZoneManager.is_cell_solid(dest_zone, Vector2i(int(tile[0]), int(tile[1]))):
+				push_error("%s: destination.%s %s no es una celda libre de %s" % [where, field, tile, dest_zone])
+				errors += 1
+	for key: String in (cfg.get("call_keys", []) as Array) + [cfg.get("force_bark", "")]:
+		errors += _check_key(key, csv_keys, where)
+	if int(cfg.get("max_nags", 0)) > (cfg.get("nag_entries", []) as Array).size():
+		push_error("%s: max_nags pide más vueltas que nag_entries" % where)
+		errors += 1
+	return errors
+
+
+## data/audio.json: todo tema nombrado (por hora, de persecución, del menú) existe en assets/audio/music/.
+static func _validate_music() -> int:
+	var cfg: Dictionary = GameConfig.read_data("res://data/audio.json")
+	if cfg.is_empty():
+		return 0
+	var tracks: Array = (cfg.get("music_periods", []) as Array).map(func(p: Dictionary) -> String: return str(p.get("track", "")))
+	tracks.append(str(cfg.get("chase", {}).get("track", "")))
+	tracks.append(str(cfg.get("menu_music", "")))
+	var errors: int = 0
+	for track: String in tracks:
+		if track != "" and not ResourceLoader.exists("res://assets/audio/music/%s.ogg" % track):
+			push_error("audio.json: falta el tema '%s' en assets/audio/music/" % track)
+			errors += 1
+	return errors
+
+
+## data/energy.json: números que tienen sentido y alimentos con energía.
+static func _validate_energy() -> int:
+	var cfg: Dictionary = GameConfig.read_data("res://data/energy.json")
+	if cfg.is_empty():
+		return 0
+	var errors: int = 0
+	var where: String = "energy.json"
+	for field: String in ["max", "run_cost_per_second", "walk_regen_per_second", "rest_regen_per_second"]:
+		if float(cfg.get(field, 0)) <= 0.0:
+			push_error("%s: '%s' tiene que ser mayor que cero" % [where, field])
+			errors += 1
+	var max_value: float = float(cfg.get("max", 100))
+	if float(cfg.get("start", max_value)) > max_value:
+		push_error("%s: start pasa de max" % where)
+		errors += 1
+	var exhausted: Dictionary = cfg.get("exhausted", {})
+	if float(exhausted.get("run_again_at", 20)) > max_value or float(exhausted.get("walk_factor", 0.75)) <= 0.0:
+		push_error("%s: exhausted tiene valores imposibles" % where)
+		errors += 1
+	for id: String in cfg.get("foods", {}):
+		if float(cfg["foods"][id].get("energy", 0)) <= 0.0:
+			push_error("%s: el alimento '%s' tiene que dar energía" % [where, id])
+			errors += 1
+	return errors
+
+
+## data/relations.json (Relations): personas y grupos que existen, profundidades y tipos conocidos, frases y negativas
+## en el CSV y flags del registro.
+static func _validate_relations(csv_keys: Dictionary) -> int:
+	var cfg: Dictionary = GameConfig.read_data(Relations.PATH)
+	if cfg.is_empty():
+		return 0
+	var errors: int = 0
+	var where: String = "relations.json"
+	var people: Array = (GameConfig.read_data("res://data/journal.json").get("people", []) as Array).map(
+			func(p: Dictionary) -> String: return p["id"])
+	var groups: Dictionary = cfg.get("groups", {})
+	var check_ids: Callable = func(ids: Variant, what: String) -> int:
+		if ids is String:
+			if groups.has(ids):
+				return 0
+			push_error("%s: %s nombra el grupo '%s', que no existe" % [where, what, ids])
+			return 1
+		var bad: int = 0
+		for pid: String in ids:
+			if not pid in people:
+				push_error("%s: %s nombra a '%s', que no está en journal.json" % [where, what, pid])
+				bad += 1
+		return bad
+	for group: String in groups:
+		errors += check_ids.call(groups[group], "el grupo " + group)
+	for rule: Dictionary in cfg.get("knows", []):
+		errors += check_ids.call(rule.get("who", []), "knows") + check_ids.call(rule.get("about", []), "knows")
+		if not String(rule.get("depth", "")) in Relations.DEPTHS:
+			push_error("%s: depth '%s' no es none, role, name ni full" % [where, rule.get("depth", "")])
+			errors += 1
+	for rule: Dictionary in cfg.get("voices", []):
+		errors += check_ids.call(rule.get("who", []), "voices")
+		if String(rule.get("voice", "")) == "":
+			push_error("%s: una voz sin nombre" % where)
+			errors += 1
+	var types: Dictionary = cfg.get("types", {})
+	for type_id: String in types:
+		if types[type_id].has("cap") and not String(types[type_id]["cap"]) in Relations.DEPTHS:
+			push_error("%s: el tipo '%s' tiene un cap imposible" % [where, type_id])
+			errors += 1
+	for t: Dictionary in cfg.get("ties", []):
+		errors += check_ids.call([t.get("a", ""), t.get("b", "")], "un lazo")
+		for field: String in ["a_says", "b_says"]:
+			errors += _check_key(String(t.get(field, "")), csv_keys, where)
+	for gate: Dictionary in cfg.get("gates", []):
+		if gate.has("who"):
+			errors += check_ids.call(gate["who"], "gates")
+		errors += _check_flags(gate.get("requires", []), where)
+		errors += _check_key(String(gate.get("refuse", "")), csv_keys, where)
+		if String(gate.get("refuse", "")) == "":
+			push_error("%s: una condición sin 'refuse'" % where)
+			errors += 1
+	return errors
+
+
+## data/speeches.json (Speeches): frases en el CSV, flags del registro y quien habla con horario.
+static func _validate_speeches(csv_keys: Dictionary) -> int:
+	var cfg: Dictionary = GameConfig.read_data("res://data/speeches.json")
+	var errors: int = 0
+	for speech: Dictionary in cfg.get("speeches", []):
+		var where: String = "speeches.json (%s)" % speech.get("npc", "?")
+		if not FileAccess.file_exists("res://data/schedules/%s.json" % speech.get("npc", "")):
+			push_error("%s: no tiene horario" % where)
+			errors += 1
+		if (speech.get("lines", []) as Array).is_empty():
+			push_error("%s: sin frases" % where)
+			errors += 1
+		for key: String in speech.get("lines", []):
+			errors += _check_key(key, csv_keys, where)
+		errors += _check_flags(speech.get("reveals", []), where)
+	return errors
+
+
+## data/game.json "notices": flag que existe y textos del CSV.
+static func _validate_notices(csv_keys: Dictionary) -> int:
+	var errors: int = 0
+	for notice: Dictionary in GameConfig.value("notices", []):
+		errors += _check_flags([notice.get("flag", "")], "game.json notices")
+		for field: String in ["title", "text", "button"]:
+			errors += _check_key(str(notice.get(field, "notice_ok" if field == "button" else "")), csv_keys, "game.json notices")
 	return errors
 
 
@@ -447,11 +647,13 @@ static func _validate_barks(csv_keys: Dictionary) -> int:
 		npcs.append(npc_id)
 		for line: Dictionary in parsed["solo"][npc_id]:
 			errors += _check_key(line["key"], csv_keys, "barks.json solo/" + npc_id)
+			errors += _check_bark_line(line, "barks.json solo/" + npc_id)
 	for pair_id: String in parsed["pairs"]:
 		npcs.append_array(pair_id.split("|"))
 		for line: Dictionary in parsed["pairs"][pair_id]:
 			errors += _check_key(line["a"]["key"], csv_keys, "barks.json " + pair_id)
 			errors += _check_key(line["b"]["key"], csv_keys, "barks.json " + pair_id)
+			errors += _check_bark_line(line["a"], "barks.json " + pair_id) + _check_bark_line(line["b"], "barks.json " + pair_id)
 	npcs.append_array(parsed["generic"]["members"])
 	for line: Dictionary in parsed["generic"]["lines"]:
 		errors += _check_key(line["a"]["key"], csv_keys, "barks.json generic")
@@ -479,12 +681,41 @@ static func _validate_barks(csv_keys: Dictionary) -> int:
 			if not KnowledgeRegistry.FLAGS.has(flag):
 				push_error("barks.json call %s: flag desconocido '%s'" % [call["id"], flag])
 				errors += 1
+	var settings: Dictionary = parsed.get("settings", {})
+	var zone_settings: Dictionary = settings.get("zones", {})
+	for group: Dictionary in [settings] + zone_settings.values():
+		for key: String in group:
+			if key != "zones" and not ChatterSystem.DEFAULTS.has(key):
+				push_error("barks.json settings: '%s' no es un ajuste (ver ChatterSystem.DEFAULTS)" % key)
+				errors += 1
+	for zone_id: String in zone_settings:
+		if not ZoneManager.has_zone(zone_id):
+			push_error("barks.json settings.zones: zona '%s' no existe" % zone_id)
+			errors += 1
 	for keys: Array in parsed["brush"].values() + parsed["brush_npc"].values():
 		for key: String in keys:
 			errors += _check_key(key, csv_keys, "barks.json brush")
 	for npc_id: String in npcs:
 		if not FileAccess.file_exists("res://data/schedules/%s.json" % npc_id):
 			push_error("barks.json: '%s' no tiene horario (data/schedules)" % npc_id)
+			errors += 1
+	return errors
+
+
+## Una línea del barullo: `zones` existen; `names` nombra a alguien con diálogo (persona del diario) y first/last/full.
+static func _check_bark_line(line: Dictionary, where: String) -> int:
+	var errors: int = 0
+	for zone_id: String in line.get("zones", []):
+		if not ZoneManager.has_zone(zone_id):
+			push_error("%s (%s): zona '%s' no existe" % [where, line["key"], zone_id])
+			errors += 1
+	var names: Dictionary = line.get("names", {})
+	for npc_id: String in names:
+		if JournalManager.person_for_dialogue(npc_id) == "":
+			push_error("%s (%s): '%s' no es una persona del diario" % [where, line["key"], npc_id])
+			errors += 1
+		if not names[npc_id] in ["first", "last", "full"]:
+			push_error("%s (%s): names.%s tiene que ser first, last o full" % [where, line["key"], npc_id])
 			errors += 1
 	return errors
 
@@ -564,6 +795,13 @@ static func _validate_schedules() -> int:
 				errors += 1
 			elif zone_id != "gone":
 				var cells: Array = [entry["tile"]] + entry.get("via", [])
+				if entry.get("sit", false):
+					# Sentado: el asiento (banco, banqueta) es obstáculo; hace falta una celda libre al lado para llegar.
+					cells = entry.get("via", [])
+					var seat := Vector2i(int(entry["tile"][0]), int(entry["tile"][1]))
+					if [Vector2i.UP, Vector2i.DOWN, Vector2i.LEFT, Vector2i.RIGHT].all(func(d: Vector2i) -> bool: return ZoneManager.is_cell_solid(zone_id, seat + d)):
+						push_error("%s: %s en %s se sienta en %s, pero no hay celda libre al lado" % [file_name, entry["time"], zone_id, seat])
+						errors += 1
 				for raw: Array in cells:
 					if ZoneManager.is_cell_solid(zone_id, Vector2i(raw[0], raw[1])):
 						push_error("%s: %s en %s cae sobre una pared u objeto (celda %s)" % [file_name, entry["time"], zone_id, raw])

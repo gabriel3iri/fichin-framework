@@ -15,12 +15,17 @@ const ARRIVAL_CLEARANCE: Vector2 = Vector2(18.0, 12.0)
 const MAX_ARRIVAL_WAIT: float = 5.0
 ## Minutos de juego de retraso tolerados antes de que el NPC aparezca en su sitio (los eventos del canon son fijos).
 const LATE_GRACE: int = 3
-## Frases y nombres sobre la cabeza se dibujan por encima del mundo.
+## Los nombres sobre la cabeza se dibujan por encima del mundo (las frases van en globos: ui/speech_bubbles.gd).
 const TEXT_Z: int = 100
 const NAME_TAG_Y: float = -50.0
+## Punta de la colita del globo (relativa a los pies): apenas encima del pelo.
+const BARK_HEAD_Y: float = -33.0
 ## Alto de un renglón de nombres (el recuadro con su borde) cuando hay que apilarlos.
 const NAME_TAG_ROW: float = 14.0
 const FACES: Dictionary = {"up": Vector2.UP, "down": Vector2.DOWN, "left": Vector2.LEFT, "right": Vector2.RIGHT}
+## Sentado (un punto del horario con "sit": true, sobre un banco o una banqueta): cuadro de sentado (CharacterFrames) y
+## el dibujo sube hasta el asiento.
+const SIT_LIFT: float = -4.0
 
 @export var npc_id: String = ""
 @export var sheet: Texture2D
@@ -42,14 +47,15 @@ var _facing: Vector2 = Vector2.DOWN
 var _talking: bool = false
 var _blocked_for: float = 0.0
 var _block_reported: bool = false
-var _bark: Label
-var _bark_tween: Tween
 var _name_tag: PanelContainer
 var _name_label: Label
 var _name_rows: int = 0    # renglones que subió para no pisarse con otro nombre
 var _detour: bool = false       # en un desvío (SearchSystem): no sigue el horario hasta end_detour()
+var _scene_lock: bool = false      # viene a hablarle al jugador: no se la puede abordar antes (se mezclarían dos charlas)
+var _held: bool = false         # frenado en pleno camino (EscortSystem espera a que el jugador la alcance)
 var _all_names: bool = false    # tecla N (depuración): nombres de todos siempre a la vista
 var _text_drop: float = 0.0     # animales (el perro): nombre, frase y [E] bajan hasta donde empieza el dibujo
+var _sitting: bool = false
 
 @onready var _sprite: AnimatedSprite2D = $AnimatedSprite2D
 @onready var _prompt: InteractPrompt = $Prompt
@@ -95,15 +101,14 @@ func interact() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if is_barking():
-		_bark.self_modulate.a = ChatterSystem.alpha_for(global_position)
+	_update_sitting()
 	if _name_tag != null:
 		_name_tag.visible = (_all_names or _mouse_over()) and not is_barking()
 		if _name_tag.visible:
 			_set_name_text(_display_name())   # cambia apenas aprende el nombre
 	# Mientras habla con el jugador se queda quieto: el horario se retoma al terminar.
-	if _talking or _route.is_empty():
-		CharacterFrames.apply(_sprite, _facing, 0.0)
+	if _talking or _held or _route.is_empty():
+		CharacterFrames.apply(_sprite, _facing, 0.0, false, _sitting)
 		return
 	var step: Dictionary = _route[0]
 	if step.get("instant", false):
@@ -125,7 +130,7 @@ func _physics_process(delta: float) -> void:
 	if _player_near(next, PLAYER_GAP) and _gets_closer_to_player(next):
 		_blocked_for += delta
 		_facing = ZoneManager.player.global_position - position
-		CharacterFrames.apply(_sprite, _facing, 0.0)
+		CharacterFrames.apply(_sprite, _facing, 0.0, false, _sitting)
 		if _blocked_for >= WAIT_BEFORE_SIDESTEP and not _block_reported:
 			_block_reported = true
 			AnnoyanceSystem.bump(npc_id, "blocked")   # cerrarle el paso lo fastidia
@@ -202,36 +207,55 @@ func is_talking() -> bool:
 	return _talking
 
 
+## Mientras viene a buscar al jugador no se le puede hablar: su charla es la que cuenta (PlayerController lo consulta).
+func can_interact() -> bool:
+	return not _scene_lock
+
+
+func lock_interaction(on: bool) -> void:
+	_scene_lock = on
+	if on:
+		_prompt.set_active(false)
+
+
 func is_barking() -> bool:
-	return _bark != null and _bark.modulate.a > 0.01
+	return ChatterSystem.bubbles != null and ChatterSystem.bubbles.has_bubble(self)
 
 
-## Frase o gesto sobre la cabeza (fastidio, comentarios, barullo). `seconds` = tiempo antes de desvanecerse.
-## La opacidad por distancia al jugador (ChatterSystem.alpha_for) va en self_modulate; el desvanecido, en modulate.
-func show_bark(text: String, color: Color = UiStyle.ACCENT, seconds: float = 1.6) -> void:
-	if _bark == null:
-		_bark = Label.new()
-		_bark.custom_minimum_size = Vector2(200, 0)
-		_bark.size = Vector2(200, 12)
-		_bark.position = Vector2(-100, -66 + _text_drop)
-		_bark.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		_bark.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
-		_bark.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		_bark.grow_vertical = Control.GROW_DIRECTION_BEGIN
-		_bark.add_theme_color_override("font_outline_color", Color(0.05, 0.05, 0.05))
-		_bark.add_theme_constant_override("outline_size", 4)
-		_bark.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_bark.z_index = TEXT_Z   # por encima de techos y árboles que estén más al sur
-		add_child(_bark)
-	_bark.text = text
-	_bark.add_theme_color_override("font_color", color)
-	_bark.modulate.a = 1.0
-	_bark.self_modulate.a = ChatterSystem.alpha_for(global_position)
-	if _bark_tween != null:
-		_bark_tween.kill()
-	_bark_tween = create_tween()
-	_bark_tween.tween_interval(seconds)
-	_bark_tween.tween_property(_bark, "modulate:a", 0.0, 0.4)
+## Lo que está diciendo ahora (vacío si no habla).
+func bark_text() -> String:
+	return ChatterSystem.bubbles.text_of(self) if ChatterSystem.bubbles != null else ""
+
+
+## Dónde apunta la colita de su globo: justo encima de la cabeza.
+func bark_head() -> Vector2:
+	return Vector2(0.0, BARK_HEAD_Y + _text_drop + (SIT_LIFT if _sitting else 0.0))
+
+
+## ¿Está sentado? (llegó a un punto de su horario con "sit" y no se movió de ahí)
+func is_sitting() -> bool:
+	return _sitting
+
+
+func _update_sitting() -> void:
+	var sit: bool = false
+	if _route.is_empty() and not _detour and _entry_index >= 0 and _entry_index < _entries.size():
+		var entry: Dictionary = _entries[_entry_index]
+		sit = bool(entry.get("sit", false)) and entry["zone"] == zone and position.is_equal_approx(ZoneManager.tile_px(entry["tile"]))
+	if sit != _sitting:
+		_sitting = sit
+		_sprite.position.y += SIT_LIFT if sit else -SIT_LIFT
+
+
+## Frase o gesto en un globo sobre la cabeza (fastidio, comentarios, barullo; ui/speech_bubbles.gd). `seconds` = tiempo
+## antes de desvanecerse. `style`: "speech" (lo común; con color ACCENT pasa a "accent": le habla al jugador, globo más
+## cálido que se acomoda primero) o "address" (recita para un público: sermón, discurso; más ancho y solemne).
+func show_bark(text: String, color: Color = UiStyle.ACCENT, seconds: float = 1.6, style: StringName = &"speech") -> void:
+	if ChatterSystem.bubbles == null:
+		return
+	if style == &"speech" and color == UiStyle.ACCENT:
+		style = &"accent"
+	ChatterSystem.bubbles.say(self, bark_head(), text, seconds, style)
 
 
 func _on_dialogue_started(started_id: String) -> void:
@@ -274,6 +298,7 @@ func _load_schedule() -> void:
 			"tile": Vector2i(tile[0], tile[1]),
 			"via": via,
 			"face": raw.get("face", "down"),
+			"sit": raw.get("sit", false),
 		})
 	_compute_departures()
 
@@ -329,6 +354,8 @@ func approach_player() -> void:
 	if player == null:
 		return
 	_detour = true
+	_held = false
+	_scene_lock = true   # viene a hablarle: nadie la aborda en el camino
 	_route.clear()
 	_blocked_for = 0.0
 	if zone != ZoneManager.current_zone:
@@ -366,6 +393,8 @@ func _on_minute_changed(_hour: int, _minute: int) -> void:
 ## al jugador, el mensajero). Mientras dura no replanifica ni aparece de golpe en su sitio.
 func begin_detour(zone_id: String, px: Vector2) -> void:
 	_detour = true
+	_held = false
+	_scene_lock = false
 	_route.clear()
 	_blocked_for = 0.0
 	_plan_route({"zone": zone_id, "tile": ZoneManager.cell_of(px), "via": [] as Array[Vector2i]})
@@ -383,6 +412,8 @@ func end_detour() -> void:
 	if not _detour:
 		return
 	_detour = false
+	_held = false
+	_scene_lock = false
 	if _entries.is_empty():
 		return
 	_entry_index = _entry_at(TimeManager.now_minutes(), "depart")
@@ -391,6 +422,38 @@ func end_detour() -> void:
 
 func is_on_detour() -> bool:
 	return _detour
+
+
+## Termina el desvío sin volver a ningún punto anterior del horario: se queda donde está hasta que el horario la mande a otro
+## lado (EscortSystem: quien llevó al jugador a la estación se queda ahí, no vuelve a donde esperaba).
+func end_detour_in_place() -> void:
+	if not _detour:
+		return
+	_detour = false
+	_held = false
+	_scene_lock = false
+	_route.clear()
+	if not _entries.is_empty():
+		_entry_index = _entry_at(TimeManager.now_minutes(), "depart")
+
+
+## Frena (o suelta) a quien camina un desvío: se queda quieta con su ruta intacta. Para esperar al jugador.
+func hold(value: bool) -> void:
+	_held = value
+
+
+func is_held() -> bool:
+	return _held
+
+
+## Aparece de golpe en `px` de `zone_id` (cortina de por medio: el jugador no la ve llegar) y se queda ahí quieta.
+func warp(zone_id: String, px: Vector2) -> void:
+	zone = zone_id
+	position = px
+	reset_physics_interpolation()
+	_route.clear()
+	_held = false
+	_refresh_presence()
 
 
 ## ¿Terminó de caminar? (sin pasos pendientes)

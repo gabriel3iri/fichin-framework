@@ -207,6 +207,8 @@ func nav_grid(zone_id: String) -> AStarGrid2D:
 	for child in root.get_children():
 		if child.has_method("footprint"):
 			var box: Rect2 = child.footprint()
+			if box.size == Vector2.ZERO:
+				continue
 			var x0: int = floori(box.position.x / TILE)
 			var y0: int = floori(box.position.y / TILE)
 			var x1: int = floori((box.end.x - 0.01) / TILE)
@@ -359,7 +361,25 @@ func change_zone(target: String) -> void:
 		get_tree().call_group("npc_actors", "step_aside_for_player")
 	AudioManager.play_sfx("door_close", -4.0)
 	await _fade_to(0.0)
-	player.can_move = true
+	player.can_move = not DialogueManager.is_active   # si en el fundido le hablaron, sigue quieto hasta que termine la charla
+	_busy = false
+
+
+## Lleva al jugador a `px` de `target` con fundido a negro y 0 minutos (quien llama suma el tiempo que corresponda): lo
+## acompañan a un lugar cuando no quiso ir caminando (EscortSystem). Sin cola: se espera con await.
+func teleport(target: String, px: Vector2) -> void:
+	if _busy or not has_zone(target):
+		return
+	_busy = true
+	player.can_move = false
+	await _fade_to(1.0)
+	if target != current_zone:
+		_swap(target)
+	player.global_position = px
+	_snap_camera()
+	get_tree().call_group("npc_actors", "step_aside_for_player")
+	await _fade_to(0.0)
+	player.can_move = not DialogueManager.is_active   # si en el fundido le hablaron, sigue quieto hasta que termine la charla
 	_busy = false
 
 
@@ -385,7 +405,7 @@ func walk_through(target: String) -> void:
 	await get_tree().process_frame
 	var new_view: ImageTexture = await _capture_world()
 	await _slide(old_view, new_view, side)
-	player.can_move = true
+	player.can_move = not DialogueManager.is_active   # si en el fundido le hablaron, sigue quieto hasta que termine la charla
 	_busy = false
 
 

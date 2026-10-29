@@ -16,13 +16,23 @@ const MIN_STEP: float = 0.25
 
 var facing: Vector2 = Vector2.DOWN
 var can_move: bool = true
+## Sentado en un asiento (Seat): no camina; cualquier tecla de movimiento lo levanta y vuelve adonde estaba parado.
+var seated: bool = false
+## El asiento donde está sentado (Seat): E llama desde ahí al que atiende.
+var seat: Node = null
+## Cuánto se corre el dibujo al sentarse (cuadro de sentado de CharacterFrames; negativo lo sube al asiento).
+const SIT_DROP: float = -4.0
+var _seat_px: Vector2 = Vector2.ZERO
+## Lo que lleva en la mano (una jarra en el bar): un dibujo chico que sigue a la mano según hacia dónde mira.
+var _held: Sprite2D
+const HAND_DOWN: Vector2 = Vector2(-5, -11)
+const HAND_SIDE: Vector2 = Vector2(5, -11)
+var _stand_px: Vector2 = Vector2.ZERO
 
 ## Todo lo interactuable al alcance; se resalta (aviso [E]) y se activa solo el más cercano.
 var _candidates: Array[Node] = []
 var _interactable: Node = null
 var _run_seconds: float = 0.0
-var _thought: Label
-var _thought_tween: Tween
 @onready var _camera: PlayerCamera = get_node_or_null("Camera2D") as PlayerCamera
 
 
@@ -47,30 +57,16 @@ func _exit_tree() -> void:
 	LoopManager.knowledge_gained.disconnect(_on_knowledge_gained)
 
 
-## Pensamiento sobre la cabeza (en cursiva de color tenue): orienta al jugador sin cartel de tutorial.
+## Pensamiento sobre la cabeza, en un globo de pensamiento (nube azulada con burbujitas; ui/speech_bubbles.gd): orienta
+## al jugador sin cartel de tutorial. Se acomoda antes que el barullo, que no lo tapa.
 func think(text: String, seconds: float = 4.0) -> void:
-	if _thought == null:
-		_thought = Label.new()
-		_thought.custom_minimum_size = Vector2(190, 0)
-		_thought.size = Vector2(190, 12)
-		_thought.position = Vector2(-95, -60)
-		_thought.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		_thought.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
-		_thought.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		_thought.grow_vertical = Control.GROW_DIRECTION_BEGIN
-		_thought.add_theme_color_override("font_color", UiStyle.DIM.lightened(0.25))
-		_thought.add_theme_color_override("font_outline_color", Color(0.05, 0.05, 0.05))
-		_thought.add_theme_constant_override("outline_size", 4)
-		_thought.z_index = 100
-		_thought.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		add_child(_thought)
-	_thought.text = text
-	_thought.modulate.a = 1.0
-	if _thought_tween != null:
-		_thought_tween.kill()
-	_thought_tween = create_tween()
-	_thought_tween.tween_interval(seconds)
-	_thought_tween.tween_property(_thought, "modulate:a", 0.0, 0.5)
+	if ChatterSystem.bubbles != null:
+		ChatterSystem.bubbles.say(self, Vector2(0.0, -33.0), text, seconds, &"thought")
+
+
+## Lo que está pensando ahora (vacío si nada).
+func thought_text() -> String:
+	return ChatterSystem.bubbles.text_of(self) if ChatterSystem.bubbles != null else ""
 
 
 ## Al despertar (data/game.json "thoughts"): una frase fija por jornada mientras dure "wake_first" y después una al
@@ -123,6 +119,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		DialogueManager.advance()  # no hace nada si hay opciones: se eligen con 1-9
 	elif is_instance_valid(_interactable):
 		_interactable.interact()
+	elif seated and is_instance_valid(seat) and seat.has_method("call_service"):
+		seat.call_service()   # sentado en el bar: llama al tabernero sin levantarse
 	else:
 		return
 	get_viewport().set_input_as_handled()
@@ -169,12 +167,81 @@ func _update_interactable() -> void:
 		best.set_highlight(true)
 
 
+## Le pone algo en la mano (null lo saca). De espaldas no se ve: lo tapa el cuerpo.
+func hold(texture: Texture2D) -> void:
+	if texture == null:
+		if _held != null:
+			_held.queue_free()
+			_held = null
+		return
+	if _held == null:
+		_held = Sprite2D.new()
+		_held.centered = true
+		add_child(_held)
+	_held.texture = texture
+	_place_held()
+
+
+func is_holding() -> bool:
+	return _held != null
+
+
+func _place_held() -> void:
+	if _held == null:
+		return
+	var view: String = CharacterFrames.view_for(facing)
+	_held.visible = view != "up"
+	var hand: Vector2 = HAND_SIDE if view == "side" else HAND_DOWN
+	if view == "side" and facing.x < 0.0:
+		hand.x = -hand.x
+	if seated:
+		hand.y += SIT_DROP + 5.0   # el cuadro de sentado baja el cuerpo 5 px (pixel/sit.py) y el dibujo sube SIT_DROP
+	_held.position = hand
+	_held.z_index = 1
+
+
+func sit(at: Vector2, face: Vector2) -> void:
+	if seated:
+		return
+	seated = true
+	_stand_px = global_position
+	_seat_px = at
+	global_position = at
+	facing = face
+	direction_changed.emit(facing)
+	_sprite.position.y += SIT_DROP
+	CharacterFrames.apply(_sprite, facing, 0.0, false, true)
+	if is_instance_valid(_interactable):
+		_interactable.set_highlight(false)
+	_interactable = null
+
+
+func stand() -> void:
+	if not seated:
+		return
+	seated = false
+	seat = null
+	_sprite.position.y -= SIT_DROP
+	if global_position == _seat_px:   # si otro lo llevó a otro lado (un traslado), queda donde lo dejaron
+		global_position = _stand_px
+
+
 func _physics_process(delta: float) -> void:
+	if seated:
+		if global_position != _seat_px:
+			stand()   # lo movió otro sistema (fundido, traslado): ya no está en el banco
+		elif can_move and not DialogueManager.is_active and Input.get_vector("move_left", "move_right", "move_up", "move_down") != Vector2.ZERO:
+			stand()
+		else:
+			Stamina.step(delta, false, false)   # sentado descansa
+			return
 	_update_interactable()
 	var input_dir: Vector2 = Vector2.ZERO
-	if can_move:
+	if can_move and not DialogueManager.is_active:   # mientras alguien le habla no se va, venga de donde venga el control
 		input_dir = Input.get_vector("move_left", "move_right", "move_up", "move_down")
-	var speed: float = run_speed if Input.is_action_pressed("run") else walk_speed
+	var moving: bool = input_dir != Vector2.ZERO
+	var running: bool = moving and Input.is_action_pressed("run") and Stamina.can_run()   # sin energía no corre
+	var speed: float = run_speed if running else walk_speed * Stamina.walk_factor()
 	velocity = input_dir * speed
 	var before: Vector2 = global_position
 	move_and_slide()
@@ -186,7 +253,8 @@ func _physics_process(delta: float) -> void:
 	if absf(moved.y) < MIN_STEP:
 		moved.y = 0.0
 	global_position = before + moved
-	_track_running(delta, input_dir != Vector2.ZERO and speed == run_speed)
+	Stamina.step(delta, moving, running)
+	_track_running(delta, running)
 
 	if input_dir != Vector2.ZERO:
 		# En diagonal mira en diagonal (el protagonista tiene vistas de tres cuartos, ver CharacterFrames).
@@ -195,7 +263,7 @@ func _physics_process(delta: float) -> void:
 			facing = new_facing
 			direction_changed.emit(facing)
 	# Se anima con el desplazamiento real: contra una pared la caminata se detiene.
-	CharacterFrames.apply(_sprite, facing, moved.length() / delta, speed == run_speed)
+	CharacterFrames.apply(_sprite, facing, moved.length() / delta, running)
 
 
 ## Un paso en cada cuadro de contacto del ciclo (0 y 2), con el sonido del suelo que se pisa.
@@ -221,13 +289,14 @@ func face_towards(point: Vector2) -> void:
 	if delta == Vector2.ZERO:
 		return
 	facing = delta
-	CharacterFrames.apply(_sprite, facing, 0.0)
+	CharacterFrames.apply(_sprite, facing, 0.0, false, seated)
 
 
 ## La cámara va pegada al jugador en cada cuadro dibujado. El jugador no se interpola (ver _ready): si la cámara y el
 ## sprite se calculaban y redondeaban a píxel por separado, el personaje iba y venía 1-2 px respecto de la pantalla
 ## (el temblor que se veía al caminar y, sobre todo, al chocar o resbalar contra una pared).
 func _process(_delta: float) -> void:
+	_place_held()
 	if _camera != null:
 		_camera.follow(global_position)
 
@@ -244,7 +313,7 @@ func snap_camera() -> void:
 ## Se queda quieto `seconds` segundos (atónito, sorprendido): no camina aunque se aprieten las flechas.
 func freeze(seconds: float) -> void:
 	can_move = false
-	CharacterFrames.apply(_sprite, facing, 0.0)
+	CharacterFrames.apply(_sprite, facing, 0.0, false, seated)
 	await get_tree().create_timer(seconds, false).timeout
 	if not DialogueManager.is_active:
 		can_move = true

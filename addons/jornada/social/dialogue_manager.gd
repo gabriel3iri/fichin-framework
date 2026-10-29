@@ -40,9 +40,14 @@ var _people_step: String = ""
 var _people_done: bool = false
 ## Quiénes son de afuera, chicos o conocidos por el apellido: data/game.json ("people"), vía GameConfig.
 const REFUSALS: int = 4
+## Variantes de la negativa antes de from_loop (data/relations.json). Las demás respuestas por alguien se arman con
+## _about_line / _voiced_line, que buscan sus variantes en el CSV.
+const EARLY_REFUSALS: int = 3
 ## Cada persona habla de un solo vecino por loop, más uno por nivel de confianza (<persona>_trust_<n>).
 var _asked: Dictionary = {}            # persona -> cuántas veces contestó por alguien en este loop
 var _refused: bool = false             # ya se negó en esta charla: no se le vuelve a preguntar
+var _people_queue: Array[String] = []  # líneas que siguen de una respuesta (tras la frase de un lazo)
+var _people_then: String = ""          # tras una negativa con "entry", la charla sigue por esa entrada
 
 
 func _ready() -> void:
@@ -95,6 +100,8 @@ func start(npc_id: String, entry_id: String = "") -> bool:
 	_npc_id = npc_id
 	_person = JournalManager.person_for_dialogue(npc_id)
 	_people_step = ""
+	_people_queue.clear()
+	_people_then = ""
 	_refused = false
 	_people_done = not npc_id in JournalManager.speakers()   # objetos y puertas no tienen esta parte
 	_speaker = JournalManager.display_name(_person) if _person != "" else tr(data["name_key"])
@@ -183,6 +190,15 @@ func advance() -> void:
 		skip_typing_requested.emit()
 		return
 	if _people_step == "reply":
+		if _people_then != "":
+			var then: String = _people_then
+			_people_then = ""
+			_people_step = ""
+			_show(_entries[then])
+			return
+		if not _people_queue.is_empty():
+			_people_reply(_people_queue.pop_front())
+			return
 		_show_people_menu()
 		return
 	var next_id: String = _current.get("next", "")
@@ -205,6 +221,8 @@ func choose(index: int) -> void:
 		_choose_people(_visible_options[index])
 		return
 	var option: Dictionary = _visible_options[index]
+	if option.has("cost"):
+		Wallet.debit(float(option["cost"]))
 	_apply(option.get("reveals", []), option.get("suspicion_delta", 0), option.get("effects", []))
 	var next_id: String = option.get("next", "")
 	if next_id == "":
@@ -323,6 +341,17 @@ func _choose_people(option: Dictionary) -> void:
 			_speaker = JournalManager.display_name(_person)
 			_people_reply(tr("dlg_people_myname") % tr("first_" + _person))
 		"ask":
+			var gate: Dictionary = _gate()
+			if not gate.is_empty():
+				# Todavía no habla de los vecinos (primer día, sin la segunda cerveza, sin haberlo escuchado...). Con
+				# "entry", la charla sigue por ahí (Hanns le ofrece otra); si no, por hoy no se le vuelve a preguntar.
+				var then: String = String(gate.get("entry", ""))
+				if then != "" and _entries.has(then):
+					_people_then = then
+				else:
+					_refused = true
+				_people_reply(tr(String(gate.get("refuse", ""))))
+				return
 			if int(_asked.get(_person, 0)) >= _people_allowance():
 				# Ya contó lo que estaba dispuesto a contar: sin más confianza no habla de los vecinos.
 				_refused = true
@@ -339,26 +368,174 @@ func _choose_people(option: Dictionary) -> void:
 		"back":
 			_show_people_menu()
 		_:
-			_asked[_person] = int(_asked.get(_person, 0)) + 1
-			_tell_about(String(option["id"]).trim_prefix("who:"))
+			var pid: String = String(option["id"]).trim_prefix("who:")
+			if Relations.enabled():
+				_answer_about(pid)
+			else:
+				_asked[_person] = int(_asked.get(_person, 0)) + 1
+				_tell_about(pid)
+
+
+## Por qué no habla de los vecinos ahora ({"refuse": clave del CSV, "entry"?}), o vacío si habla.
+func _gate() -> Dictionary:
+	if not Relations.enabled():
+		return {}
+	if LoopManager.loop_number < Relations.from_loop():
+		return {"refuse": "dlg_people_refuse_kid" if GameConfig.in_group("kids", _person) else "dlg_people_early_%d" % randi_range(1, EARLY_REFUSALS)}
+	return Relations.gate(_person, ZoneManager.current_zone)
+
+
+## Qué sabe ya el técnico de alguien, en capas: 0 nada, 1 qué hace, 2 un nombre, 3 nombre completo.
+func _layer(pid: String) -> int:
+	var bits: int = JournalManager.name_bits(pid)
+	if bits == JournalManager.FULL:
+		return 3
+	if bits != 0:
+		return 2
+	return 1 if pid in JournalManager.roles_heard else 0
+
+
+## Contesta por alguien según data/relations.json: lo que sabe de él (depth), el lazo que los une y lo que el técnico ya
+## sabe. Cada respuesta da la capa siguiente (qué hace, después un nombre, después el nombre completo); un lazo puede
+## dar más de una de golpe, menos, o hacerlo esquivar, y anteponer lo que piensa del otro. Las frases salen de
+## _about_line: cada una en la voz de quien contesta y, si el juego las tiene, propias de la persona por la que se pregunta.
+func _answer_about(pid: String) -> void:
+	var known: int = Relations.depth(_person, pid)
+	if known == 0:
+		_people_reply(_voiced_line("unknown", pid))
+		return
+	var link: Dictionary = Relations.tie(_person, pid)
+	var tie_type: String = String(link.get("type", ""))
+	var rules: Dictionary = Relations.rules(tie_type)
+	var cap: int = known
+	if rules.has("cap"):
+		cap = mini(cap, Relations.DEPTHS.find(String(rules["cap"])))
+	var dodge: bool = bool(rules.get("dodge", false))
+	if dodge:
+		cap = mini(cap, 1)   # quien guarda un secreto dice a lo sumo qué hace
+	var says: String = String(link.get("says", ""))
+	var before: int = _layer(pid)
+	var after: int = mini(before + int(rules.get("steps", 1)), cap)
+	if after <= before:
+		if says != "":
+			_people_reply(tr(says))
+		elif dodge:
+			_people_reply(_voiced_line("dodge", pid, tie_type))
+		else:
+			_people_reply(_voiced_line("nomore", pid, tie_type))
+		return
+	if not bool(rules.get("free", false)):
+		_asked[_person] = int(_asked.get(_person, 0)) + 1
+	var lines: Array[String] = []
+	if says != "":
+		lines.append(tr(says))
+	if after == 1:
+		JournalManager.learn_role(pid)
+		lines.append(_about_line("role", pid, tie_type))
+	elif after == 2:
+		lines.append(_learn_a_name(pid, tie_type))
+	else:
+		if before == 0:
+			lines.append(_about_line("role", pid, tie_type))   # de golpe hasta el final: también qué hace
+		JournalManager.learn_role(pid)
+		JournalManager.learn_name(pid, JournalManager.FULL)
+		lines.append(_about_line("full", pid, tie_type))
+	_people_queue.assign(lines.slice(1))
+	_people_reply(lines[0])
 
 
 ## Contesta por una persona con un solo dato: lo primero que dice el pueblo de ella (el apellido o el nombre) o, si
-## ya sabe uno, el que falta (y entonces, quién es).
+## ya sabe uno, el nombre completo.
 func _tell_about(pid: String) -> void:
-	var bits: int = JournalManager.name_bits(pid)
-	if bits == 0:
-		if GameConfig.in_group("known_by_surname", pid):
-			JournalManager.learn_name(pid, JournalManager.LAST)
-			_people_reply(tr("dlg_people_surname") % tr("last_" + pid))
-		else:
-			JournalManager.learn_name(pid, JournalManager.FIRST)
-			_people_reply(tr("dlg_people_thats") % tr("first_" + pid))
+	if JournalManager.name_bits(pid) == 0:
+		_people_reply(_learn_a_name(pid))
 		return
-	var asked_as: String = JournalManager.display_name(pid)
 	JournalManager.learn_name(pid, JournalManager.FULL)
+	_people_reply(_about_line("full", pid))
+
+
+## Aprende el nombre por el que se conoce a alguien (el apellido para los de game.json "known_by_surname") y devuelve
+## la frase que lo dice.
+func _learn_a_name(pid: String, tie_type: String = "") -> String:
+	if GameConfig.in_group("known_by_surname", pid):
+		JournalManager.learn_name(pid, JournalManager.LAST)
+		return _about_line("surname", pid, tie_type)
+	JournalManager.learn_name(pid, JournalManager.FIRST)
+	return _about_line("first", pid, tie_type)
+
+
+## Lo que dice quien contesta (_person) de `pid` en una capa (`kind`: role, first, surname o full). Busca en el CSV,
+## de lo más propio a lo más general, la primera clave que exista (con variantes _1, _2...):
+##   rel_<kind>_<pid>_<quien contesta>   lo que dice esa persona de esa otra (su hija, su peón...)
+##   rel_<kind>_<pid>_<voz>              lo que dice alguien de esa voz (chicos, el cura...) de esa persona
+##   rel_<kind>_<pid>                    lo que dice cualquiera de esa persona
+##   dlg_people_<kind>_<tipo de lazo>    la frase de quien le tiene rencor, es su rival..., con el dato en %s
+##   dlg_people_<kind>_<voz>             la frase de esa voz, con el dato en %s
+##   dlg_people_<kind>                   la frase genérica, con el dato en %s
+## La voz de cada uno la da data/relations.json ("voices"). El dato es qué hace (en minúscula), el nombre, el
+## apellido ("el alcalde Brandt") o el nombre completo; una frase propia puede decirlo con sus palabras, sin %s.
+func _about_line(kind: String, pid: String, tie_type: String = "") -> String:
+	var voice: String = Relations.voice(_person)
+	var bases: Array[String] = ["rel_%s_%s_%s" % [kind, pid, _person]]
+	if voice != "":
+		bases.append("rel_%s_%s_%s" % [kind, pid, voice])
+	bases.append("rel_%s_%s" % [kind, pid])
+	if tie_type != "":
+		bases.append("dlg_people_%s_%s" % [kind, tie_type])
+	if voice != "":
+		bases.append("dlg_people_%s_%s" % [kind, voice])
+	bases.append("dlg_people_" + kind)
+	var text: String = _pick_line(bases)
+	if not "%s" in text:
+		return text
 	var person: Dictionary = JournalManager.person(pid)
-	_people_reply(tr("dlg_people_fullname") % [asked_as, tr(person["name_key"]), tr(person["role_key"])])
+	match kind:
+		"role":
+			var role: String = tr(person.get("role_key", ""))
+			return text % (role.left(1).to_lower() + role.substr(1))
+		"first":
+			return text % tr("first_" + pid)
+		"surname":
+			return text % tr("last_" + pid)
+		_:
+			return text % tr(person.get("name_key", pid))
+
+
+## Una respuesta sin dato (no lo conoce, no sabe más, esquiva): la que tiene quien contesta para `pid`
+## (rel_<lo que es>_<pid>_<quien contesta>, con lo que es = unknown, nomore o dodge), la de su lazo, la de su voz o la
+## genérica (dlg_people_<lo que es>[_<tipo de lazo>|_<voz>]).
+func _voiced_line(what: String, pid: String = "", tie_type: String = "") -> String:
+	var base: String = "dlg_people_" + what
+	var bases: Array[String] = []
+	if pid != "":
+		bases.append("rel_%s_%s_%s" % [what, pid, _person])
+	if tie_type != "":
+		bases.append("%s_%s" % [base, tie_type])
+	var voice: String = Relations.voice(_person)
+	if voice != "":
+		bases.append("%s_%s" % [base, voice])
+	bases.append(base)
+	return _pick_line(bases)
+
+
+## Una frase al azar de la primera base que tenga texto en el CSV: sus variantes <base>_1, <base>_2... o, si no tiene,
+## la base sola.
+func _pick_line(bases: Array[String]) -> String:
+	for base: String in bases:
+		var found: Array[String] = []
+		var i: int = 1
+		while true:
+			var key: String = "%s_%d" % [base, i]
+			var text: String = tr(key)
+			if text == key:
+				break
+			found.append(text)
+			i += 1
+		if found.is_empty() and tr(base) != base:
+			found.append(tr(base))
+		if not found.is_empty():
+			return found[randi() % found.size()]
+	return ""
 
 
 func _people_reply(text: String) -> void:
@@ -408,13 +585,26 @@ func _conditions_met(cond: Dictionary) -> bool:
 	var tasks: int = WorkManager.completed_count()
 	if tasks < cond.get("tasks_min", 0) or tasks > cond.get("tasks_max", 9999):
 		return false
-	return _time_ok(cond) and _knowledge_ok(cond.get("knowledge", []), cond.get("knowledge_any", []), cond.get("not_knowledge", []))
+	return _energy_ok(cond) and _time_ok(cond) and _knowledge_ok(cond.get("knowledge", []), cond.get("knowledge_any", []), cond.get("not_knowledge", []))
 
 
 func _option_available(option: Dictionary) -> bool:
 	if LoopManager.loop_number < option.get("loop_min", 1) or LoopManager.loop_number > option.get("loop_max", 9999):
 		return false
-	return _time_ok(option) and _knowledge_ok(option.get("requires", []), option.get("requires_any", []), option.get("not_requires", []))
+	return _energy_ok(option) and _time_ok(option) and _cost_ok(option) and _knowledge_ok(option.get("requires", []), option.get("requires_any", []), option.get("not_requires", []))
+
+
+## "energy_below": N solo aparece si la energía es menor que N (la comida no se ofrece a quien no la necesita).
+func _energy_ok(rules: Dictionary) -> bool:
+	return not rules.has("energy_below") or Stamina.value < float(rules["energy_below"])
+
+
+## "cost": N solo aparece si alcanza la plata (la opción de compra se apaga sin dinero). Cobra al elegirla (choose).
+## "cost": solo si alcanza la plata. "cant_afford": solo si NO alcanza (la respuesta de quien no fía).
+func _cost_ok(rules: Dictionary) -> bool:
+	if rules.has("cant_afford") and Wallet.can_afford(float(rules["cant_afford"])):
+		return false
+	return not rules.has("cost") or Wallet.can_afford(float(rules["cost"]))
 
 
 func _time_ok(rules: Dictionary) -> bool:

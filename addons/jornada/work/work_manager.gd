@@ -16,8 +16,6 @@ const SUSPICION_ON_COMPLETE: int = -8
 const SUSPICION_ON_FAIL: int = 15
 const VETERAN_LOOP: int = 6
 const VETERAN_FRACTION: float = 0.6
-## Tareas completadas -> salario en liras (canon 09 §5: 60% / 80% / 100%).
-const PAY_BY_TASKS: Dictionary = {3: 500, 4: 1000, 5: 1500}
 
 var tasks: Array = []
 ## Hora de entrega (minutos del día). Sin "deadline" en work.json no hay plazo: `has_deadline` es falso y no se muestra ni se exige.
@@ -89,12 +87,9 @@ func completed_count() -> int:
 	return _done.size()
 
 
+## Salario del día: lo que pagan las tareas ya terminadas (pago por tarea, data/economy.json). 0 sin economía.
 func pay_earned() -> int:
-	var best: int = 0
-	for needed: int in PAY_BY_TASKS:
-		if completed_count() >= needed:
-			best = maxi(best, PAY_BY_TASKS[needed])
-	return best
+	return int(Wallet.pay_per_task() * completed_count())
 
 
 ## Lo llama el punto de trabajo cuando el jugador presiona E.
@@ -163,6 +158,7 @@ func _finish(task: Dictionary, success: bool, data: Dictionary) -> void:
 		_done[task["id"]] = true
 		if not data.get("forced", false) and data.get("extra_minutes", 0) == 0:
 			_mastered[task["id"]] = true
+		Wallet.credit(Wallet.pay_per_task())   # pago por tarea terminada (antes solo se mencionaba en la orden)
 		GameManager.add_suspicion(SUSPICION_ON_COMPLETE)
 		_grant_trust()
 		Toasts.show_key("toast_task_done", [tr(task["name_key"])])

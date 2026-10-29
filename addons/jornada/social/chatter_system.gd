@@ -10,24 +10,42 @@ extends Node
 ##       npc_zone              el NPC tiene que estar en esa zona (aunque no sea la del jugador): la voz llega "a través
 ##                             de la puerta", sin que se lo vea; el sonido (sfx) suena antes
 ##       sfx                   sonido que acompaña al llamado (p. ej. golpes en la puerta)
-## De cerca la frase se ve entera; de lejos, medio transparente (alpha_for). No da flags ni sospecha.
+##       loop_min / loop_max   solo en esas jornadas (desde el segundo día, una versión corta)
+##       approach: true        con dialogue: el NPC entra caminando hasta el jugador (NpcActor.approach_player) y
+##                             recién al llegar habla; al terminar la charla vuelve a su horario
+##       think_key             en vez de que hable el NPC, el jugador contesta solo (piensa en voz alta)
+## Cada frase sale en un globo (ui/speech_bubbles.gd): de cerca entero, de lejos medio transparente (alpha_for); los
+## globos no se pisan y, si no hay lugar para uno nuevo, quien iba a hablar espera. No da flags ni sospecha, pero una
+## línea puede llevar `names` ({npc: "first"|"last"|"full"}): si el jugador la oye de cerca y esa persona está a la
+## vista (le hablan a ella), aprende ese nombre (JournalManager.learn_name), como al oírlo en un diálogo.
+## Una línea suelta puede llevar `zones` (solo se dice ahí: lo que se habla en la taberna).
+## Ritmo y duración: `settings` de barks.json (claves de DEFAULTS), con `settings.zones.<zona>` para un lugar con
+## más barullo (más globos a la vez, más seguido).
 
 const PATH: String = "res://data/barks.json"
 ## Opacidad según la distancia al jugador (px): entera hasta NEAR, FAR_ALPHA desde FAR.
 const NEAR: float = 96.0
 const FAR: float = 280.0
 const FAR_ALPHA: float = 0.35
-## Cada NPC habla solo cada SOLO_MIN..SOLO_MAX segundos (reales; F los acelera como a todo).
-const SOLO_MIN: float = 10.0
-const SOLO_MAX: float = 26.0
-## Dos NPCs "se cruzan" a menos de esta distancia; un mismo par no vuelve a charlar antes de PAIR_COOLDOWN.
+## Dos NPCs "se cruzan" a menos de esta distancia.
 const PAIR_RANGE: Vector2 = Vector2(48.0, 30.0)
-const PAIR_COOLDOWN: float = 75.0
-const REPLY_DELAY: float = 2.4
-## Para que no hablen todos a la vez.
-const MAX_AT_ONCE: int = 3
-const MIN_GAP: float = 1.2
-const TICK: float = 0.5
+const TICK: float = 0.25
+## Ritmo del barullo (barks.json "settings" los pisa, y "settings.zones.<zona>" para una zona):
+##   solo_min..solo_max   cada cuánto habla solo cada NPC (s reales; F los acelera como a todo)
+##   pair_cooldown        un mismo par no vuelve a charlar antes de esto
+##   max_at_once          globos de barullo a la vez en la zona;  min_gap: entre dos frases nuevas
+##   seconds_*            cuánto dura un globo: base + por letra, entre min y max (cortos: casi no dan tiempo a leer)
+##   reply_after          la respuesta sale cuando a la primera frase le queda esta fracción de su tiempo
+##   hear_range           a cuántos px del jugador una frase con `names` le enseña el nombre
+##   bubble_width         ancho máximo del texto de un globo (px)
+const DEFAULTS: Dictionary = {
+	"solo_min": 10.0, "solo_max": 26.0, "pair_cooldown": 75.0, "max_at_once": 3, "min_gap": 1.2,
+	"seconds_base": 0.8, "seconds_per_char": 0.03, "seconds_min": 1.3, "seconds_max": 2.8, "reply_after": 0.75,
+	"hear_range": 140.0, "bubble_width": 112,
+}
+## Llamados con "approach": a cuánto del jugador habla y cuánto espera como mucho que llegue (s reales).
+const TALK_RANGE: float = 40.0
+const APPROACH_SECONDS: float = 15.0
 
 var _data: Dictionary = {}
 var _clock: float = 0.0
@@ -37,12 +55,26 @@ var _next_solo: Dictionary = {}      # npc_id -> _clock en que puede volver a ha
 var _pair_ready: Dictionary = {}     # "a|b" -> _clock en que ese par puede volver a charlar
 var _last_key: Dictionary = {}       # npc_id -> última frase dicha (para no repetirla)
 var _calls_done: Dictionary = {}     # id del llamado -> true (se vacía cada loop)
+var _generation: int = 0             # sube con cada loop o partida nueva: corta las esperas de _approach_and_talk
+## Los globos (en una CanvasLayer propia, debajo del HUD): NpcActor.show_bark los usa.
+var bubbles: SpeechBubbles
 
 
 func _ready() -> void:
 	_data = GameConfig.read_data(PATH)
+	var layer := CanvasLayer.new()
+	layer.layer = 5   # debajo del HUD (10) y del diario
+	add_child(layer)
+	bubbles = SpeechBubbles.new()
+	bubbles.alpha_for = alpha_for
+	bubbles.max_text_width = int(setting("bubble_width"))
+	layer.add_child(bubbles)
+	LoopManager.game_reset.connect(bubbles.clear)
 	ZoneManager.zone_changed.connect(func(_z: String) -> void: _next_solo.clear())
-	LoopManager.loop_started.connect(func(_n: int) -> void: _calls_done.clear())
+	LoopManager.loop_started.connect(func(_n: int) -> void:
+		_calls_done.clear()
+		_generation += 1)   # un llamado que esperaba a alguien caminando queda sin efecto
+	LoopManager.game_reset.connect(func() -> void: _generation += 1)
 
 
 func _process(delta: float) -> void:
@@ -63,6 +95,19 @@ func alpha_for(pos: Vector2) -> float:
 		return 1.0
 	var t: float = clampf((pos.distance_to(player.global_position) - NEAR) / (FAR - NEAR), 0.0, 1.0)
 	return lerpf(1.0, FAR_ALPHA, t)
+
+
+## Un ajuste del ritmo del barullo: el de la zona del jugador si lo tiene, si no el general, si no DEFAULTS.
+func setting(key: String) -> float:
+	var settings: Dictionary = _data.get("settings", {})
+	var zone: Dictionary = settings.get("zones", {}).get(ZoneManager.current_zone, {})
+	return float(zone.get(key, settings.get(key, DEFAULTS[key])))
+
+
+## Cuánto dura en pantalla un globo con `text`.
+func bubble_seconds(text: String) -> float:
+	return clampf(setting("seconds_base") + text.length() * setting("seconds_per_char"), setting("seconds_min"),
+			setting("seconds_max"))
 
 
 ## "No tengo nada que decirle": propia del NPC si tiene, si no según sea hombre, mujer o chico.
@@ -88,22 +133,27 @@ func _tick() -> void:
 			present.append(actor)
 	_separate_name_tags()
 	_check_calls()
-	if busy >= MAX_AT_ONCE or _clock - _last_start < MIN_GAP:
+	if busy >= int(setting("max_at_once")) or _clock - _last_start < setting("min_gap"):
 		return
 	if _try_pair(present):
 		return
 	present.shuffle()
 	for actor: NpcActor in present:
 		if not _next_solo.has(actor.npc_id):
-			_next_solo[actor.npc_id] = _clock + randf_range(2.0, SOLO_MAX)   # al entrar a la zona no hablan todos juntos
+			# al entrar a la zona no hablan todos juntos
+			_next_solo[actor.npc_id] = _clock + randf_range(minf(2.0, setting("solo_min")), setting("solo_max"))
 			continue
 		if _clock < _next_solo[actor.npc_id]:
 			continue
-		_next_solo[actor.npc_id] = _clock + randf_range(SOLO_MIN, SOLO_MAX)
 		var lines: Array = _available(_data.get("solo", {}).get(actor.npc_id, []))
 		if lines.is_empty():
 			continue
-		_say(actor, _pick_key(actor.npc_id, lines))
+		var line: Dictionary = _pick_line(actor.npc_id, lines)
+		if not bubbles.has_room(actor, actor.bark_head(), tr(line["key"])):
+			_next_solo[actor.npc_id] = _clock + 1.0   # no hay lugar para el globo: lo dice en un rato
+			continue
+		_next_solo[actor.npc_id] = _clock + randf_range(setting("solo_min"), setting("solo_max"))
+		_say(actor, line)
 		return
 
 
@@ -118,6 +168,8 @@ func _check_calls() -> void:
 			continue
 		if not _call_time_ok(call):
 			continue
+		if LoopManager.loop_number < int(call.get("loop_min", 1)) or LoopManager.loop_number > int(call.get("loop_max", 9999)):
+			continue
 		if not call.get("knowledge", []).all(func(f: String) -> bool: return LoopManager.has_knowledge(f)):
 			continue
 		if call.get("not_knowledge", []).any(func(f: String) -> bool: return LoopManager.has_knowledge(f)):
@@ -129,9 +181,19 @@ func _check_calls() -> void:
 			if DialogueManager.is_active:
 				continue   # se reintenta cuando termine la charla en curso
 			_calls_done[call["id"]] = true
-			_open_dialogue(call)
+			if call.get("approach", false):
+				_approach_and_talk(call, actor)
+			else:
+				_open_dialogue(call)
 			continue
 		_calls_done[call["id"]] = true
+		if call.has("think_key"):
+			if call.has("sfx"):
+				AudioManager.play_sfx(call["sfx"], -2.0)
+			player.think(tr(call["think_key"]), 4.5)
+			for flag: String in call.get("reveals", []):
+				LoopManager.gain_knowledge(flag)
+			continue
 		actor.show_bark(tr(call["key"]), UiStyle.ACCENT, 4.0)
 		for flag: String in call.get("reveals", []):
 			LoopManager.gain_knowledge(flag)
@@ -158,11 +220,48 @@ func _caller(call: Dictionary) -> NpcActor:
 func _open_dialogue(call: Dictionary) -> void:
 	for flag: String in call.get("reveals", []):
 		LoopManager.gain_knowledge(flag)
+	var generation: int = _generation
 	if call.has("sfx"):
 		AudioManager.play_sfx(call["sfx"], -2.0)
 		await get_tree().create_timer(1.2, false).timeout   # lo que tarda en abrir/contestar quien está del otro lado
-	if not DialogueManager.is_active:
+	# En esa espera pudo terminar el loop, empezar otra partida o irse quien llamaba: entonces no habla.
+	if generation == _generation and not DialogueManager.is_active and _caller(call) != null:
 		DialogueManager.start(call["npc"])
+
+
+## Llamado que entra a buscarlo: camina hasta el jugador (por la puerta o el borde, nunca aparece a su lado), habla al
+## llegar y, terminada la charla, vuelve a su horario. Si en APPROACH_SECONDS no llegó, habla desde donde esté.
+func _approach_and_talk(call: Dictionary, actor: NpcActor) -> void:
+	for flag: String in call.get("reveals", []):
+		LoopManager.gain_knowledge(flag)
+	if call.has("sfx"):
+		AudioManager.play_sfx(call["sfx"], -2.0)
+	actor.approach_player()
+	ZoneManager.player.can_move = false   # la escena es suya: el jugador la espera
+	var generation: int = _generation
+	var waited: float = 0.0
+	while waited < APPROACH_SECONDS:
+		await get_tree().process_frame
+		if generation != _generation or not is_instance_valid(actor) or not is_instance_valid(ZoneManager.player):
+			return   # terminó el loop o empezó otra partida: la escena ya no existe
+		waited += get_process_delta_time()
+		if actor.zone == ZoneManager.current_zone and actor.global_position.distance_to(ZoneManager.player.global_position) <= TALK_RANGE:
+			break
+	ZoneManager.player.can_move = true
+	if DialogueManager.is_active or not DialogueManager.start(actor.npc_id):
+		actor.end_detour()
+		return
+	var npc_id: String = actor.npc_id
+	var ended: Array = [false]
+	var done := func(ended_id: String) -> void:
+		if ended_id == npc_id:
+			ended[0] = true
+	DialogueManager.dialogue_ended.connect(done)
+	while not ended[0] and is_instance_valid(actor) and generation == _generation:
+		await get_tree().process_frame
+	DialogueManager.dialogue_ended.disconnect(done)
+	if is_instance_valid(actor):
+		actor.end_detour()
 
 
 ## Si dos nombres se pisan, el del que está más al norte sube un renglón (o dos, si hay tres juntos).
@@ -199,10 +298,13 @@ func _try_pair(present: Array[NpcActor]) -> bool:
 			var exchange: Array = _exchange_for(a, b)
 			if exchange.is_empty():
 				continue
-			_pair_ready[pair_id] = _clock + PAIR_COOLDOWN
 			var line: Dictionary = exchange[1].pick_random()
-			_say(exchange[0], line["a"]["key"])
-			_reply(exchange[2], line["b"]["key"])
+			var first: NpcActor = exchange[0]
+			if not bubbles.has_room(first, first.bark_head(), tr(line["a"]["key"])):
+				continue
+			_pair_ready[pair_id] = _clock + setting("pair_cooldown")
+			var seconds: float = _say(first, line["a"])
+			_reply(exchange[2], line["b"], seconds * setting("reply_after"))
 			return true
 	return false
 
@@ -223,25 +325,61 @@ func _exchange_for(a: NpcActor, b: NpcActor) -> Array:
 	return []
 
 
-func _reply(actor: NpcActor, key: String) -> void:
-	await get_tree().create_timer(REPLY_DELAY, false).timeout
-	if is_instance_valid(actor) and actor.visible and not actor.is_talking():
-		_say(actor, key)
+## La respuesta de una charla: si todavía no hay lugar para su globo, espera un poco (hasta dos segundos).
+func _reply(actor: NpcActor, line: Dictionary, delay: float) -> void:
+	await get_tree().create_timer(maxf(delay, 0.3), false).timeout
+	for attempt in 8:
+		if not is_instance_valid(actor) or not actor.visible or actor.is_talking():
+			return
+		if bubbles.has_room(actor, actor.bark_head(), tr(line["key"])):
+			_say(actor, line)
+			return
+		await get_tree().create_timer(0.25, false).timeout
 
 
-func _say(actor: NpcActor, key: String) -> void:
+## Dice la línea en un globo; devuelve cuánto dura.
+func _say(actor: NpcActor, line: Dictionary) -> float:
 	_last_start = _clock
-	_last_key[actor.npc_id] = key
-	var text: String = tr(key)
-	actor.show_bark(text, UiStyle.TEXT, clampf(1.4 + text.length() * 0.045, 2.0, 4.5))
+	_last_key[actor.npc_id] = line["key"]
+	var text: String = tr(line["key"])
+	var seconds: float = bubble_seconds(text)
+	actor.show_bark(text, UiStyle.TEXT, seconds)
+	_hear_names(actor, line)
+	return seconds
 
 
-## Elige una frase al azar sin repetir la última que dijo ese NPC.
-func _pick_key(npc_id: String, lines: Array) -> String:
+## Una frase con `names` le enseña al jugador el nombre de quien está a la vista y le hablan, si la oyó de cerca.
+func _hear_names(actor: NpcActor, line: Dictionary) -> void:
+	var names: Dictionary = line.get("names", {})
+	var player: PlayerController = ZoneManager.player
+	if names.is_empty() or player == null or actor.zone != ZoneManager.current_zone:
+		return
+	if actor.global_position.distance_to(player.global_position) > setting("hear_range"):
+		return
+	var bits_for: Dictionary = {"first": JournalManager.FIRST, "last": JournalManager.LAST, "full": JournalManager.FULL}
+	for npc_id: String in names:
+		var person: String = JournalManager.person_for_dialogue(npc_id)
+		if person != "" and _visible_here(npc_id):
+			JournalManager.learn_name(person, int(bits_for.get(names[npc_id], 0)))
+
+
+func _visible_here(npc_id: String) -> bool:
+	for node in get_tree().get_nodes_in_group("npc_actors"):
+		if node is NpcActor and node.npc_id == npc_id and node.visible and node.zone == ZoneManager.current_zone:
+			return true
+	return false
+
+
+## Elige una línea al azar sin repetir la última que dijo ese NPC.
+func _pick_line(npc_id: String, lines: Array) -> Dictionary:
 	var options: Array = lines.filter(func(l: Dictionary) -> bool: return l["key"] != _last_key.get(npc_id, ""))
 	if options.is_empty():
 		options = lines
-	var key: String = options.pick_random()["key"]
+	return options.pick_random()
+
+
+func _pick_key(npc_id: String, lines: Array) -> String:
+	var key: String = _pick_line(npc_id, lines)["key"]
 	_last_key[npc_id] = key
 	return key
 
@@ -255,6 +393,8 @@ func _available_pairs(lines: Array) -> Array:
 
 
 func _in_window(line: Dictionary) -> bool:
+	if line.has("zones") and not ZoneManager.current_zone in line["zones"]:
+		return false
 	if not line.has("from"):
 		return true
 	var now: int = TimeManager.now_minutes()

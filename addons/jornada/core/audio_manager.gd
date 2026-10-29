@@ -12,6 +12,12 @@ const SFX_DIR: String = "res://assets/audio/sfx/"
 const AMBIENT_DIR: String = "res://assets/audio/ambient/"
 const CROSSFADE: float = 2.0
 const SILENT_DB: float = -60.0
+## Un ambiente nuevo entra desde este volumen (no desde el silencio) y salteando los primeros/últimos segundos.
+const AMBIENT_FADE_FROM_DB: float = -18.0
+const AMBIENT_SKIP: float = 6.0
+## Fundido del ambiente al cambiar de zona: corto, para que el lugar suene apenas se entra.
+const ZONE_AMBIENT_FADE: float = 0.35
+const ZONE_MUSIC_FADE: float = 0.8
 const SFX_VOICES: int = 8
 const SFX_COOLDOWN_MS: int = 120   # un mismo efecto no se dispara dos veces seguidas (evita los clics de fichin-2.0)
 
@@ -32,6 +38,7 @@ var _variants: Dictionary = {}   # "dir+nombre" -> [nombre, nombre_2, nombre_3..
 var _fade_music: Tween
 var _fade_ambient: Tween
 var _desired_track: String = ""
+var _chasing: bool = false   # la sospecha pasó la advertencia y todavía no bajó lo suficiente: suena la música de persecución
 
 
 func _ready() -> void:
@@ -44,6 +51,7 @@ func _ready() -> void:
 		_sfx.append(_make_player("SFX"))
 	TimeManager.minute_changed.connect(_on_minute_changed)
 	ZoneManager.zone_changed.connect(_on_zone_changed)
+	GameManager.suspicion_changed.connect(_on_suspicion_changed)
 
 
 func _make_player(bus: String) -> AudioStreamPlayer:
@@ -139,8 +147,11 @@ func set_ambient(ambient_name: String, fade: float = 1.5) -> void:
 	_active_ambient = 1 - _active_ambient
 	var fresh: AudioStreamPlayer = _ambient[_active_ambient]
 	fresh.stream = stream
-	fresh.volume_db = SILENT_DB
-	fresh.play()
+	# Arranca casi audible y desde un punto cualquiera de la grabación: al entrar a un lugar, el lugar ya estaba
+	# sonando (desde -60 dB, la mitad del fundido no se oía; y algunas tomas empiezan con su propio fundido).
+	fresh.volume_db = AMBIENT_FADE_FROM_DB
+	var length: float = stream.get_length()
+	fresh.play(randf_range(AMBIENT_SKIP, length - AMBIENT_SKIP) if length > AMBIENT_SKIP * 3.0 else 0.0)
 	_fade_ambient.tween_property(fresh, "volume_db", 0.0, fade)
 
 
@@ -175,11 +186,12 @@ func _on_minute_changed(_hour: int, _minute: int) -> void:
 	_update_ambient()
 
 
-func _update_for_time(force: bool) -> void:
+func _update_for_time(force: bool, fade: float = CROSSFADE) -> void:
 	var now: int = TimeManager.now_minutes()
 	# "music_silence_from": desde esa hora no hay música; "music_periods": qué tema suena desde cada hora.
 	var silence_from: int = TimeManager.parse_clock(_config["music_silence_from"]) if _config.has("music_silence_from") else 99999
 	var track: String = ""
+	var chasing: bool = _chase_active()
 	# "music_muted_in": zonas con su propia música en el ambiente (el acordeón del bar): ahí no suena la de fondo.
 	if ZoneManager.current_zone in _config.get("music_muted_in", []):
 		now = silence_from
@@ -189,18 +201,39 @@ func _update_for_time(force: bool) -> void:
 				track = period["track"]
 	if track == "":
 		if current_track != "" or force:
-			stop_music(3.0)
+			stop_music(minf(3.0, fade * 1.5))
 		return
-	play_music(track)
+	# "chase": la persecución manda sobre la del horario (pero no sobre el silencio final ni las zonas sin música de fondo).
+	if chasing:
+		track = str(_config["chase"].get("track", track))
+	play_music(track, fade)
+
+
+## ¿Está la policía encima? Entra al pasar la advertencia de sospecha y sale al bajar de "release_below" (así no parpadea
+## entre dos temas alrededor del umbral).
+func _chase_active() -> bool:
+	var chase: Dictionary = _config.get("chase", {})
+	if chase.is_empty():
+		return false
+	if _chasing:
+		_chasing = GameManager.suspicion >= int(chase.get("release_below", GameManager.suspicion_warning))
+	else:
+		_chasing = GameManager.suspicion >= GameManager.suspicion_warning
+	return _chasing
+
+
+func _on_suspicion_changed(_value: int) -> void:
+	if in_game:
+		_update_for_time(false)
 
 
 func _on_zone_changed(_zone_id: String) -> void:
 	if in_game:
-		_update_for_time(false)
-		_update_ambient()
+		_update_for_time(false, ZONE_MUSIC_FADE)
+		_update_ambient(ZONE_AMBIENT_FADE)
 
 
-func _update_ambient() -> void:
+func _update_ambient(fade: float = 1.5) -> void:
 	var zone: String = ZoneManager.current_zone
 	var wanted: String = _config.get("ambient", {}).get(zone, "")
 	# "ambient_changes": desde una hora, un ambiente se cambia por otro (el pueblo con lluvia cuando empieza a llover)
@@ -212,7 +245,7 @@ func _update_ambient() -> void:
 	var crowd: Dictionary = _config.get("ambient_crowds", {}).get(wanted, {})
 	if not crowd.is_empty() and people_in_zone(zone) >= int(crowd.get("people", 1)):
 		wanted = crowd["busy"]
-	set_ambient(wanted)
+	set_ambient(wanted, fade)
 
 
 ## NPCs que están ahora en `zone_id` (extras incluidos).

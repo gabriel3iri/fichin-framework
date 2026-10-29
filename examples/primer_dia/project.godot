@@ -39,6 +39,11 @@ ChatterSystem="*res://addons/jornada/social/chatter_system.gd"
 Identification="*res://addons/jornada/social/identification.gd"
 Sightings="*res://addons/jornada/social/sightings.gd"
 SearchSystem="*res://addons/jornada/social/search_system.gd"
+Notices="*res://addons/jornada/core/notices.gd"
+EscortSystem="*res://addons/jornada/social/escort_system.gd"
+Stamina="*res://addons/jornada/core/stamina.gd"
+Speeches="*res://addons/jornada/social/speeches.gd"
+Wallet="*res://addons/jornada/core/wallet.gd"
 
 [display]
 

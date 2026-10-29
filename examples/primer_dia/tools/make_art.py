@@ -13,7 +13,8 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "addons/jornada/tools"))
 from pixel.core import C, T, Canvas, hexc, noise, save_sheet  # noqa: E402
-from pixel.figures import build_frames, portrait  # noqa: E402
+from pixel.figures import build_frames  # noqa: E402
+from pixel.portrait import portrait  # noqa: E402
 
 ART = ROOT / "assets/generated_assets"
 TILES = ART / "tiles/base"

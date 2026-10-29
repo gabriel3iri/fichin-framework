@@ -13,6 +13,18 @@ const BAD: Color = Color(0.902, 0.224, 0.275)
 ## Nombres sobre la cabeza: letra blanca en un recuadro negro con borde marrón (distinto de los diálogos).
 const NAME_TEXT: Color = Color(0.96, 0.95, 0.92)
 const NAME_BG: Color = Color(0.03, 0.03, 0.03, 0.9)
+## Globos del barullo (SpeechBubbles): papel claro apenas transparente (se ve un poco lo de atrás), borde y letra de
+## tinta opacos; los que le hablan al jugador, más cálidos.
+const BUBBLE_BG: Color = Color(0.937, 0.910, 0.835, 0.84)
+const BUBBLE_ACCENT_BG: Color = Color(1.0, 0.878, 0.69, 0.86)
+const BUBBLE_INK: Color = Color(0.122, 0.122, 0.122)
+const BUBBLE_TEXT: Color = Color(0.17, 0.14, 0.12)
+const BUBBLE_SHADE: Color = Color(0.0, 0.0, 0.0, 0.35)
+## Discurso a un público (un sermón): papel de pergamino, con el borde marrón de la UI por dentro.
+const BUBBLE_ADDRESS_BG: Color = Color(0.957, 0.902, 0.769, 0.88)
+## Pensamiento del jugador: nube azulada, letra de tinta azul.
+const BUBBLE_THOUGHT_BG: Color = Color(0.835, 0.871, 0.937, 0.84)
+const BUBBLE_THOUGHT_TEXT: Color = Color(0.16, 0.2, 0.32)
 
 static var _grabber: ImageTexture
 

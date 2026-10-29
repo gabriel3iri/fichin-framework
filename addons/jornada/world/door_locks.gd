@@ -22,12 +22,29 @@ static func all() -> Dictionary:
 	return _locks
 
 
-## Devuelve la clave del aviso si la puerta `from_zone` → `to_zone` está cerrada ahora; "" si se puede pasar.
+## El aviso si la puerta `from_zone` → `to_zone` está cerrada ahora: [clave, argumentos]; vacío si se puede pasar.
+## "hours" ({"open", "close"}): un negocio abierto al público solo en ese horario (antes avisa a qué hora abre).
+static func closed_message(from_zone: String, to_zone: String) -> Array:
+	_load()
+	var rule: Dictionary = _locks.get("%s>%s" % [from_zone, to_zone], {})
+	if rule.has("hours"):
+		var now: int = TimeManager.now_minutes()
+		var hours: Dictionary = rule["hours"]
+		if hours.has("open") and now < TimeManager.parse_clock(hours["open"]):
+			return ["toast_closed_until", [hours["open"]]]
+		if hours.has("close") and now >= TimeManager.parse_clock(hours["close"]):
+			return ["toast_closed_today", []]
+	var key: String = closed_reason(from_zone, to_zone)
+	return [] if key == "" else [key, []]
+
+
+## Devuelve la clave del aviso si la puerta `from_zone` → `to_zone` está cerrada con llave ahora; "" si se puede pasar.
+## (El horario de los negocios, "hours", lo mira closed_message.)
 static func closed_reason(from_zone: String, to_zone: String) -> String:
 	_load()
 	var rule: Dictionary = _locks.get("%s>%s" % [from_zone, to_zone], {})
-	if rule.is_empty():
-		return ""
+	if not (rule.has("open_from") or rule.has("open_if_any") or rule.has("closed_if_any")):
+		return ""   # sin regla, o solo horario
 	# Cerrada mientras tenga alguno de estos flags (p. ej. detenido en la celda).
 	for flag: String in rule.get("closed_if_any", []):
 		if LoopManager.has_knowledge(str(flag)):

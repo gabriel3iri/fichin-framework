@@ -10,7 +10,10 @@ extends Node
 ##   el layout de cada zona ("layout" en zones.json), de uno de estos tipos ("kind"):
 ##     grid       el mapa entero: "rows" de caracteres y "legend" (carácter -> tile); "outdoor" suma los detalles sueltos
 ##     interior   un cuarto: pared norte de 4 filas con "windows" y "doors" a cuartos hijos, "floor", "counters" y la
-##                salida en la pared sur ("exit_x", hacia "parent")
+##                salida en la pared sur ("exit_x", hacia "parent"). Una puerta con "part" usa otra pieza de 2x3 de
+##                world.json "parts" (una escalera); "exit_part", otra pieza para la salida (una escalera que baja).
+##                Una puerta con "side": "south" va en la pared sur, como la salida (otra escalera que baja).
+##                "exit_x": null, sin salida propia: el cuarto se conecta solo por sus puertas (un sótano).
 ##     outdoor    (sin "kind") suelo "ground" + rectángulos "fills" + "buildings" + el seto del borde
 ##   Todos aceptan "props" (decorado), "spots" (puestos de trabajo) y "nodes" ({name, script, position}: nodos del juego).
 ##   Las rutas de "paths" (edificios dibujados, objetos examinables, overlays) son opcionales: si no existen, se saltean.
@@ -505,29 +508,46 @@ func _interior_cells(layout: Dictionary, doors: Array[Dictionary]) -> Dictionary
 			if x == 0 or x == size.x - 1 or y == size.y - 1 or y <= 2:
 				cells[cell] = wall
 			elif y == 3:
-				cells[cell] = _part("plinth")
+				cells[cell] = _tile(style["plinth"]) if style.has("plinth") else _part("plinth")
 			else:
 				cells[cell] = floor_idx
 	var glass: Array = style["window_2x2"].map(func(n: String) -> int: return _tile(n))
+	# "window_top" ([izq, der]): la ventana sube a la fila 0 (alta, de 2x3; el arco va arriba).
+	var glass_top: Array = style.get("window_top", []).map(func(n: String) -> int: return _tile(n))
 	for left in layout.get("windows", []):
 		var x: int = int(left)
+		if glass_top.size() == 2:
+			cells[Vector2i(x, 0)] = glass_top[0]
+			cells[Vector2i(x + 1, 0)] = glass_top[1]
 		cells[Vector2i(x, 1)] = glass[0]
 		cells[Vector2i(x + 1, 1)] = glass[1]
 		cells[Vector2i(x, 2)] = glass[2]
 		cells[Vector2i(x + 1, 2)] = glass[3]
-	var inner: Array = _door_part("door_inside")
 	for d: Dictionary in layout.get("doors", []):
+		if d.get("side", "north") == "south":   # en la pared sur, como la salida: una pieza de 2x1 (una escalera que baja)
+			var low: Variant = _cfg["parts"][str(d.get("part", "exit_mat"))]
+			for col in 2:
+				cells[Vector2i(int(d["x"]) + col, size.y - 1)] = _tile(low[col] if low is Array else str(low))
+			continue
+		# "part": otra pieza de 2x3 (una escalera); si no, la puerta del estilo de pared o la de siempre.
+		var inner: Array = _door_part(str(d.get("part", style.get("door", "door_inside"))))
 		for row in 3:
 			for col in 2:
 				cells[Vector2i(int(d["x"]) + col, 1 + row)] = inner[row][col]
-	var exit_x: int = int(layout["exit_x"])
-	for col in 2:
-		cells[Vector2i(exit_x + col, size.y - 1)] = _part("exit_mat")
+	var has_exit: bool = layout.get("exit_x") != null      # sin salida propia (un sótano): se entra por sus puertas
+	var exit_x: int = int(layout["exit_x"]) if has_exit else -1
+	var exit_part: Variant = _cfg["parts"][str(layout.get("exit_part", "exit_mat"))]   # una pieza o [izq, der]
+	for col in (2 if has_exit else 0):
+		cells[Vector2i(exit_x + col, size.y - 1)] = _tile(exit_part[col] if exit_part is Array else str(exit_part))
 	for c: Array in layout.get("counters", []):
 		for x in range(int(c[0]), int(c[1]) + 1):
 			cells[Vector2i(x, int(c[2]))] = _part("counter")
-	doors.append({"to": layout["parent"], "conn": {"door_tile": [exit_x, size.y - 1], "door_size": [2, 1], "approach": "north"}})
+	if has_exit:
+		doors.append({"to": layout["parent"], "conn": {"door_tile": [exit_x, size.y - 1], "door_size": [2, 1], "approach": "north"}})
 	for d: Dictionary in layout.get("doors", []):
+		if d.get("side", "north") == "south":
+			doors.append({"to": d["to"], "conn": {"door_tile": [int(d["x"]), size.y - 1], "door_size": [2, 1], "approach": "north"}})
+			continue
 		doors.append({"to": d["to"], "conn": {"door_tile": [int(d["x"]), 3], "door_size": [2, 3], "approach": "south"},
 				"sign": d.get("sign", "")})
 	return cells
@@ -786,6 +806,12 @@ func _add_decor(root: Node2D, kind: String, tile: Vector2i) -> void:
 	node.name = "%s_%d_%d" % [kind.capitalize(), tile.x, tile.y]
 	node.set("prop_texture", load(_paths["props_dir"] + kind + ".png"))
 	node.set("collider_size", _collider(kind))
+	var def: Dictionary = _cfg["props"].get("list", {}).get(kind, {})
+	node.set("flat", bool(def.get("flat", false)))
+	node.set("frames", int(def.get("frames", 1)))   # animado: tira de cuadros
+	node.set("fps", float(def.get("fps", 6.0)))
+	node.set("raise", float(def.get("raise", 0.0)))   # se apoya más arriba (sobre un mostrador)
+	node.set("shadow", bool(def.get("shadow", true)))   # false: cuelga de la pared, sin sombra en el piso
 	node.position = _foot([tile.x, tile.y])
 	root.add_child(node)
 	node.owner = root
