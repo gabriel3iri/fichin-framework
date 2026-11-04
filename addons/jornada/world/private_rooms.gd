@@ -6,7 +6,7 @@ extends Node
 ##   - Si el ocupante vuelve y encuentra al jugador adentro: sospecha y lo echa. Con la entrada `door_<ocupante>_caught` en su
 ##     diálogo de la puerta, se lo dice en una charla y lo saca al pasillo; si lo ve forzando la puerta, también.
 ##   - Con "admits": false el ocupante no deja pasar a nadie: golpear solo trae su respuesta (el de la cuatro).
-##   - Con la ganzúa (el flag `quiet_flag` del archivo) se abre en `quiet_seconds`, sin ruido y sin que nadie lo note.
+##   - Con la ganzúa (el flag `quiet_flag` del archivo, o alguno de esa lista) se abre en `quiet_seconds`, sin ruido y sin que nadie lo note.
 ## Todo se olvida al empezar el loop.
 
 const PATH: String = "res://data/private_rooms.json"
@@ -112,7 +112,9 @@ func _knock(door: Door, room: String, rule: Dictionary) -> bool:
 
 func _force(door: Door, room: String, rule: Dictionary) -> bool:
 	_pending.erase(room)
-	var quiet: bool = str(_config.get("quiet_flag", "")) != "" and LoopManager.has_knowledge(str(_config["quiet_flag"]))
+	var quiet_flags: Variant = _config.get("quiet_flag", [])
+	var quiet: bool = (quiet_flags if quiet_flags is Array else [quiet_flags]).any(func(f: Variant) -> bool:
+		return str(f) != "" and LoopManager.has_knowledge(str(f)))
 	if not quiet:
 		AudioManager.play_sfx("door_force", -2.0)
 	var duration: float = setting("quiet_seconds", 1.2) if quiet else setting("force_seconds", 2.6)
