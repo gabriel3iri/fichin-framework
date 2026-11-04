@@ -27,6 +27,14 @@ extends Node
 ##   cards                     [{id, group, portrait, look_key, answer: {dato: opción}, person?, clues: [{key,
 ##                             requires_any}], flag?}]: con `person`, la ficha aparece cuando el jugador vio a esa
 ##                             persona; `flag` se gana al confirmar esa ficha.
+##   name_not_after            palabras tras las que un nombre no es de una persona («Gasthof Adler»)
+##
+## Nombres sueltos: los datos con `journal_bit` (nombre, apellido) se reconocen en lo que se dice (`name_at`). En un
+## diálogo se anotan solos (`hear_text`); en un globo de barullo, solo si el jugador hace clic en el nombre (`hear`): así
+## el diario no se llena de lo que no escuchó. Un nombre suelto queda a mano para cualquier ficha, sin saber de quién es.
+## Con un nombre puesto en la ficha de alguien, el mundo lo muestra con duda («Erna?», `shown_name`) y se le puede
+## preguntar «¿usted es Erna?» (DialogueManager): si acierta, ese dato queda confirmado (`confirm_field`) y se aprende
+## el nombre; si no, queda descartado para esa ficha (`rule_out`).
 
 signal changed
 signal confirmed(card_ids: Array)
@@ -40,10 +48,17 @@ var guesses: Dictionary = {}
 var confirmed_ids: Array[String] = []
 ## Ficha -> "alive" | "dead": la marca libre del jugador.
 var marks: Dictionary = {}
+## Dato -> [opciones]: nombres sueltos que el jugador oyó (sin saber de quién son).
+var heard: Dictionary = {}
+## Ficha -> [datos] confirmados preguntándole a esa persona.
+var confirmed_fields: Dictionary = {}
+## Ficha -> {dato: [opciones]} que esa persona dijo que no son suyas.
+var ruled_out: Dictionary = {}
 
 var _cfg: Dictionary = {}
 var _cards: Dictionary = {}   # id -> ficha
 var _groups: Dictionary = {}  # id -> grupo
+var _words: Dictionary = {}   # texto del nombre -> [dato, opción] (se arma la primera vez que hace falta)
 
 
 func _ready() -> void:
@@ -137,6 +152,8 @@ func options_available(field_id: String) -> Array:
 		var people: Array = o.get("people", [])
 		if unlock.is_empty() and people.is_empty():
 			return true
+		if o["id"] in heard.get(field_id, []):
+			return true
 		if unlock.any(func(f: String) -> bool: return LoopManager.has_knowledge(f)):
 			return true
 		return bit != 0 and people.any(func(p: String) -> bool: return JournalManager.name_bits(p) & bit != 0))
@@ -200,11 +217,12 @@ func clues(card_id: String) -> Array[String]:
 ## Pone `option_id` en el dato `field_id` de la ficha. Si el dato es `unique` y esa opción estaba en otra ficha (sin
 ## confirmar), se mueve. Las confirmadas no se tocan.
 func guess(card_id: String, option_id: String, field_id: String = "name") -> void:
-	if not _cards.has(card_id) or is_confirmed(card_id) or not field_id in fields_of(card_id):
+	if not _cards.has(card_id) or is_confirmed(card_id) or not field_id in fields_of(card_id) \
+			or is_field_confirmed(card_id, field_id):
 		return
 	if field(field_id).get("unique", false):
 		for other: String in guesses.keys():
-			if guess_of(other, field_id) == option_id and not is_confirmed(other):
+			if guess_of(other, field_id) == option_id and not is_confirmed(other) and not is_field_confirmed(other, field_id):
 				(guesses[other] as Dictionary).erase(field_id)
 	var entry: Dictionary = guesses.get(card_id, {})
 	entry[field_id] = option_id
@@ -217,10 +235,12 @@ func guess(card_id: String, option_id: String, field_id: String = "name") -> voi
 func clear(card_id: String, field_id: String = "") -> void:
 	if is_confirmed(card_id) or not guesses.has(card_id):
 		return
-	if field_id == "":
+	var entry: Dictionary = guesses[card_id]
+	for f: String in entry.keys():
+		if (field_id == "" or f == field_id) and not is_field_confirmed(card_id, f):
+			entry.erase(f)
+	if entry.is_empty():
 		guesses.erase(card_id)
-	else:
-		(guesses[card_id] as Dictionary).erase(field_id)
 	changed.emit()
 
 
@@ -305,11 +325,16 @@ func reset() -> void:
 	guesses.clear()
 	confirmed_ids.clear()
 	marks.clear()
+	heard.clear()
+	confirmed_fields.clear()
+	ruled_out.clear()
 	changed.emit()
 
 
 func to_dict() -> Dictionary:
-	return {"guesses": guesses.duplicate(true), "confirmed": confirmed_ids.duplicate(), "marks": marks.duplicate()}
+	return {"guesses": guesses.duplicate(true), "confirmed": confirmed_ids.duplicate(), "marks": marks.duplicate(),
+		"heard": heard.duplicate(true), "confirmed_fields": confirmed_fields.duplicate(true),
+		"ruled_out": ruled_out.duplicate(true)}
 
 
 ## Un guardado de antes de los datos múltiples tiene un nombre suelto por ficha: pasa a {"name": ...}.
@@ -322,4 +347,180 @@ func from_dict(value: Variant) -> void:
 		guesses[card_id] = {"name": entry} if typeof(entry) == TYPE_STRING else (entry as Dictionary).duplicate()
 	confirmed_ids.assign(value.get("confirmed", []))
 	marks = (value.get("marks", {}) as Dictionary).duplicate()
+	heard = (value.get("heard", {}) as Dictionary).duplicate(true)
+	confirmed_fields = (value.get("confirmed_fields", {}) as Dictionary).duplicate(true)
+	ruled_out = (value.get("ruled_out", {}) as Dictionary).duplicate(true)
 	changed.emit()
+
+
+# --- Nombres sueltos y preguntar por ellos ------------------------------------------------------------
+
+## ¿Se pueden oír nombres ahora? (con fichas, desde que se aprenden nombres y con el diario a mano)
+func can_hear() -> bool:
+	return enabled() and JournalManager.names_allowed() and JournalManager.has_journal()
+
+
+## Si `word` (una palabra suelta, con la puntuación que traiga) es un nombre o apellido de las fichas: [dato, opción];
+## si no, []. `before`: la palabra anterior («Gasthof Adler» no es una persona).
+func name_at(word: String, before: String = "") -> Array:
+	if not enabled():
+		return []
+	if _words.is_empty():
+		for field_id: String in _cfg.get("fields", {}):
+			if field(field_id).get("journal_bit", "") == "":
+				continue
+			for o: Dictionary in field(field_id).get("options", []):
+				_words[tr(o["key"])] = [field_id, o["id"]]
+	var found: Array = _words.get(strip_word(word), [])
+	if found.is_empty() or strip_word(before) in _cfg.get("name_not_after", []):
+		return []
+	return found
+
+
+## La palabra sin la puntuación de los costados («¿Erna?» -> «Erna»).
+static func strip_word(word: String) -> String:
+	return word.strip_edges().lstrip("¿¡«(\"'—-").rstrip(".,;:!?»)\"'—-…")
+
+
+## El texto con los nombres envueltos en `open` y `close` (para pintarlos); "" en `open` = no los marca.
+func mark_names(text: String, open: String, close: String) -> String:
+	if not can_hear():
+		return text
+	var words: PackedStringArray = text.split(" ")
+	for i in words.size():
+		var core: String = strip_word(words[i])
+		if core == "" or name_at(words[i], words[i - 1] if i > 0 else "").is_empty():
+			continue
+		words[i] = words[i].replace(core, open + core + close)
+	return " ".join(words)
+
+
+## Los nombres de un texto, en orden: [[dato, opción], ...].
+func names_in(text: String) -> Array:
+	var out: Array = []
+	var words: PackedStringArray = text.split(" ")
+	for i in words.size():
+		var found: Array = name_at(words[i], words[i - 1] if i > 0 else "")
+		if not found.is_empty() and not found in out:
+			out.append(found)
+	return out
+
+
+## Anota los nombres de lo que se le dijo de frente (un diálogo): ahí la atención está clara.
+func hear_text(text: String) -> void:
+	if can_hear():
+		for found: Array in names_in(text):
+			hear(found[0], found[1])
+
+
+## Anota un nombre suelto; true si es nuevo.
+func hear(field_id: String, option_id: String) -> bool:
+	if not can_hear() or not field(field_id).has("options"):
+		return false
+	var list: Array = heard.get(field_id, [])
+	if option_id in list:
+		return false
+	list.append(option_id)
+	heard[field_id] = list
+	changed.emit()
+	return true
+
+
+func is_heard(field_id: String, option_id: String) -> bool:
+	return option_id in heard.get(field_id, [])
+
+
+## La ficha de una persona ("" si no tiene).
+func card_for_person(person_id: String) -> String:
+	for c: Dictionary in _cfg.get("cards", []):
+		if c.get("person", "") == person_id:
+			return c["id"]
+	return ""
+
+
+func is_field_confirmed(card_id: String, field_id: String) -> bool:
+	return is_confirmed(card_id) or field_id in confirmed_fields.get(card_id, [])
+
+
+## ¿Esa persona ya dijo que este dato no es suyo?
+func is_ruled_out(card_id: String, field_id: String, option_id: String) -> bool:
+	return option_id in (ruled_out.get(card_id, {}) as Dictionary).get(field_id, [])
+
+
+## El dato de la ficha que se le puede preguntar a la persona («¿usted es Erna?»): el primer nombre que el jugador puso
+## y no está confirmado ni ya lo sabe. [dato, opción] o [].
+func askable_guess(person_id: String) -> Array:
+	var card_id: String = card_for_person(person_id)
+	if card_id == "" or is_confirmed(card_id):
+		return []
+	for field_id: String in fields_of(card_id):
+		var bit: String = field(field_id).get("journal_bit", "")
+		var known: int = {"first": JournalManager.FIRST, "last": JournalManager.LAST}.get(bit, 0)
+		if known == 0 or JournalManager.name_bits(person_id) & known:
+			continue
+		var option_id: String = guess_of(card_id, field_id)
+		if option_id != "" and not is_field_confirmed(card_id, field_id):
+			return [field_id, option_id]
+	return []
+
+
+## ¿Es suyo? (la respuesta de la ficha de esa persona)
+func is_answer(person_id: String, field_id: String, option_id: String) -> bool:
+	return (card(card_for_person(person_id)).get("answer", {}) as Dictionary).get(field_id, "") == option_id
+
+
+## Las personas de las fichas que tienen ese dato (los dueños de un nombre).
+func holders(field_id: String, option_id: String) -> Array[String]:
+	var out: Array[String] = []
+	for c: Dictionary in _cfg.get("cards", []):
+		if c.get("person", "") != "" and (c.get("answer", {}) as Dictionary).get(field_id, "") == option_id:
+			out.append(c["person"])
+	return out
+
+
+## La persona dijo que sí: el dato queda fijo en su ficha.
+func confirm_field(person_id: String, field_id: String, option_id: String) -> void:
+	var card_id: String = card_for_person(person_id)
+	if card_id == "":
+		return
+	var entry: Dictionary = guesses.get(card_id, {})
+	entry[field_id] = option_id
+	guesses[card_id] = entry
+	var done: Array = confirmed_fields.get(card_id, [])
+	if not field_id in done:
+		done.append(field_id)
+	confirmed_fields[card_id] = done
+	_check()
+	changed.emit()
+
+
+## La persona dijo que no: sale de su ficha y queda tachado para ella.
+func rule_out(person_id: String, field_id: String, option_id: String) -> void:
+	var card_id: String = card_for_person(person_id)
+	if card_id == "":
+		return
+	var entry: Dictionary = ruled_out.get(card_id, {})
+	var list: Array = entry.get(field_id, [])
+	if not option_id in list:
+		list.append(option_id)
+	entry[field_id] = list
+	ruled_out[card_id] = entry
+	if guess_of(card_id, field_id) == option_id:
+		(guesses[card_id] as Dictionary).erase(field_id)
+	changed.emit()
+
+
+## Cómo lo ve el jugador en el mundo: lo que sabe de él (JournalManager) o, si no sabe su nombre y lo puso en la ficha,
+## ese nombre con duda («Erna?»).
+func shown_name(person_id: String) -> String:
+	var known: String = JournalManager.display_name(person_id)
+	if not enabled() or JournalManager.name_bits(person_id) != 0:
+		return known
+	var card_id: String = card_for_person(person_id)
+	var parts: Array[String] = []
+	for field_id: String in fields_of(card_id) if card_id != "" else []:
+		if field(field_id).get("journal_bit", "") != "":
+			var text: String = option_text(field_id, guess_of(card_id, field_id))
+			if text != "":
+				parts.append(text)
+	return known if parts.is_empty() else " ".join(parts) + "?"

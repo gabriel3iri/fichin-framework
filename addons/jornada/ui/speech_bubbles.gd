@@ -12,6 +12,11 @@ extends Node2D
 ## Cada cuadro se acomodan: primero los de más prioridad, y cada globo prueba su lugar de antes, encima de la cabeza,
 ## más arriba, corrido de costado (con la colita torcida). Si no entra sin pisar a otro ni salirse de la pantalla, ese
 ## cuadro no se dibuja (su tiempo sigue corriendo). Quien quiera hablar puede preguntar antes si hay lugar (`has_room`).
+## Nombres: las palabras que `find_name` reconoce se pintan de otro color, subrayadas; un clic en una emite `name_clicked`
+## (así el jugador anota lo que de verdad oyó). Con el mouse encima, el nombre se aclara y el cursor pasa a ser la
+## mano. `meta` de `say` viaja con el globo y vuelve en la señal.
+
+signal name_clicked(field_id: String, option_id: String, speaker: Node2D, meta: Dictionary)
 
 const FONT_PATH: String = "res://addons/jornada/ui/skin/font_pixel.tres"
 const FONT_SIZE: int = 10
@@ -37,6 +42,8 @@ var address_text_width: int = 168
 var thought_text_width: int = 150
 ## Opacidad según dónde está quien habla (lejos del jugador, más transparente). La pone ChatterSystem.
 var alpha_for: Callable = func(_pos: Vector2) -> float: return 1.0
+## (palabra, palabra anterior) -> [dato, opción] si es un nombre que se puede anotar, o []. La pone ChatterSystem.
+var find_name: Callable = func(_word: String, _before: String) -> Array: return []
 
 
 class Bubble:
@@ -56,6 +63,9 @@ class Bubble:
 	var placed_before: bool = false
 	var shown: bool = false
 	var alpha: float = 1.0
+	var meta: Dictionary = {}
+	var names: Array = []       # por renglón, por palabra: [dato, opción] si es un nombre, o []
+	var hits: Array = []        # [[Rect2i, dato, opción]]: dónde quedó cada nombre (se rearma al ubicar el globo)
 
 
 var _bubbles: Array[Bubble] = []
@@ -63,6 +73,7 @@ var _font: Font
 var _line_height: int = 10
 var _ascent: int = 8
 var _serial: int = 0
+var _hovered: Array = []      # [globo, índice del nombre] bajo el mouse, o []
 
 
 func _ready() -> void:
@@ -75,7 +86,7 @@ func _ready() -> void:
 ## `head`: dónde apunta la colita, relativo al origen de quien habla. `priority` < 0 = la del estilo (STYLE_PRIORITY);
 ## más alta = se acomoda primero.
 func say(speaker: Node2D, head: Vector2, text: String, seconds: float, style: StringName = &"speech",
-		priority: int = -1) -> void:
+		priority: int = -1, meta: Dictionary = {}) -> void:
 	if not style in STYLES:
 		push_warning("SpeechBubbles: estilo desconocido '%s'" % style)
 		style = &"speech"
@@ -86,9 +97,17 @@ func say(speaker: Node2D, head: Vector2, text: String, seconds: float, style: St
 	b.text = text
 	b.style = style
 	b.lines = _wrap(text, _text_width_for(style))
+	var before: String = ""
+	for line: String in b.lines:
+		var found: Array = []
+		for word: String in line.split(" "):
+			found.append(find_name.call(word, before))
+			before = word
+		b.names.append(found)
 	b.size = _box_size(b.lines, style)
 	b.priority = priority if priority >= 0 else int(STYLE_PRIORITY[style])
 	b.seconds = maxf(seconds, 0.1)
+	b.meta = meta
 	_serial += 1
 	b.serial = _serial
 	_bubbles.append(b)
@@ -161,14 +180,62 @@ func has_room(speaker: Node2D, head: Vector2, text: String, style: StringName = 
 	return _place(probe, _anchor(probe), taken)
 
 
+## ¿Hay un nombre para anotar en este texto?
+func has_names(text: String) -> bool:
+	var words: PackedStringArray = text.split(" ", false)
+	for i in words.size():
+		if not (find_name.call(words[i], words[i - 1] if i > 0 else "") as Array).is_empty():
+			return true
+	return false
+
+
+## Un clic sobre un nombre de un globo a la vista.
+func _unhandled_input(event: InputEvent) -> void:
+	var click := event as InputEventMouseButton
+	if click == null or not click.pressed or click.button_index != MOUSE_BUTTON_LEFT:
+		return
+	var found: Array = _name_at(Vector2i((make_input_local(click) as InputEventMouseButton).position.round()))
+	if found.is_empty():
+		return
+	var b: Bubble = found[0]
+	var hit: Array = b.hits[found[1]]
+	get_viewport().set_input_as_handled()
+	name_clicked.emit(hit[1], hit[2], b.speaker, b.meta)
+
+
 func _process(delta: float) -> void:
 	if _bubbles.is_empty():
+		_set_hover([])
 		return
 	for b: Bubble in _bubbles.duplicate():
 		b.age += delta
 		if b.age >= b.seconds + FADE or not is_instance_valid(b.speaker) or not b.speaker.is_inside_tree():
 			_bubbles.erase(b)
 	_layout()
+	_set_hover(_name_at(Vector2i(get_local_mouse_position().round())))
+
+
+## [globo, índice del nombre] en ese punto de la pantalla, o [].
+func _name_at(at: Vector2i) -> Array:
+	for b: Bubble in _bubbles:
+		if not b.shown or b.alpha < 0.2:
+			continue
+		for i in b.hits.size():
+			if (b.hits[i][0] as Rect2i).grow(1).has_point(at):
+				return [b, i]
+	return []
+
+
+## El nombre bajo el mouse: se aclara y el cursor pasa a ser la mano (y vuelve a la flecha al salir).
+func _set_hover(hover: Array) -> void:
+	if hover == _hovered:
+		return
+	if hover.is_empty() != _hovered.is_empty():
+		Input.set_default_cursor_shape(Input.CURSOR_ARROW if hover.is_empty() else Input.CURSOR_POINTING_HAND)
+	if not hover.is_empty():
+		AudioManager.play_sfx("ui_hover", -14.0)   # como al pasar por un botón
+	_hovered = hover
+	queue_redraw()
 
 
 func _find(speaker: Node2D) -> Bubble:
@@ -203,6 +270,8 @@ func _layout() -> void:
 			b.shown = true
 			b.offset = b.rect.position - anchor
 			b.placed_before = true
+			b.hits = _runs(b).filter(func(run: Dictionary) -> bool: return run.has("field")).map(
+					func(run: Dictionary) -> Array: return [run["hit"], run["field"], run["option"]])
 			taken.append_array(_occupied(b))
 			var fade: float = clampf((b.seconds + FADE - b.age) / FADE, 0.0, 1.0)
 			b.alpha = fade if b.style == &"thought" else clampf(float(alpha_for.call(b.speaker.global_position)), 0.0, 1.0) * fade
@@ -289,6 +358,11 @@ func _wrap(text: String, width: int) -> PackedStringArray:
 	return lines
 
 
+## Cuánto avanza la pluma con `text` (con sus espacios del final, que el ancho solo no cuenta).
+func _advance(text: String) -> int:
+	return _text_width(text + "|") - _text_width("|")
+
+
 func _text_width(text: String) -> int:
 	return int(ceilf(_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE).x))
 
@@ -326,13 +400,52 @@ func _draw_bubble(b: Bubble) -> void:
 		_draw_cloud(b, bg, ink, shade)
 	else:
 		_draw_box(b, bg, ink, shade)
+	var name_color: Color = UiStyle.BUBBLE_NAME
+	name_color.a *= b.alpha
+	var hover_color: Color = UiStyle.BUBBLE_NAME_HOVER
+	hover_color.a *= b.alpha
+	var name_index: int = -1
+	for run: Dictionary in _runs(b):
+		var color: Color = text_color
+		if run.has("field"):
+			name_index += 1
+			color = hover_color if _hovered == [b, name_index] else name_color
+		draw_string(_font, run["pos"], run["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, color)
+		if run.has("field"):
+			var hit: Rect2i = run["hit"]
+			_px_rect(hit.position.x, int(run["pos"].y) + 1, hit.size.x, 1, color)   # subrayado
+
+
+## El texto del globo ya ubicado, en tramos: lo común de corrido y cada nombre aparte ({pos, text} y, si es un nombre,
+## field, option y hit: el recuadro que se puede clickear).
+func _runs(b: Bubble) -> Array:
+	var out: Array = []
 	var pad: Vector2i = _pad(b.style)
 	var r: Rect2i = b.rect
 	for i in b.lines.size():
 		var line: String = b.lines[i]
 		var x: int = r.position.x + 1 + pad.x + (r.size.x - 2 - 2 * pad.x - _text_width(line)) / 2
 		var y: int = r.position.y + 1 + pad.y + i * _line_height + _ascent
-		draw_string(_font, Vector2(x, y), line, HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, text_color)
+		var words: PackedStringArray = line.split(" ")
+		var found_in_line: Array = b.names[i] if i < b.names.size() else []
+		var start: int = 0      # dónde empieza el tramo común en curso
+		var at: int = 0         # dónde empieza la palabra
+		for w in words.size():
+			var word: String = words[w]
+			var found: Array = found_in_line[w] if w < found_in_line.size() else []
+			if not found.is_empty():
+				var core: String = Identification.strip_word(word)
+				var core_at: int = at + word.find(core)
+				if core_at > start:
+					out.append({"pos": Vector2(x + _advance(line.left(start)), y), "text": line.substr(start, core_at - start)})
+				var cx: int = x + _advance(line.left(core_at))
+				out.append({"pos": Vector2(cx, y), "text": core, "field": found[0], "option": found[1],
+						"hit": Rect2i(cx, y - _ascent, _text_width(core), _line_height + 1)})
+				start = core_at + core.length()
+			at += word.length() + 1
+		if start < line.length():
+			out.append({"pos": Vector2(x + _advance(line.left(start)), y), "text": line.substr(start)})
+	return out
 
 
 ## Recuadro con las esquinas recortadas (un píxel), sombra de un píxel abajo y colita de flecha; `address` suma un

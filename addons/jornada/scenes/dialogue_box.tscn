@@ -65,11 +65,17 @@ theme_override_styles/panel = SubResource("StyleBoxTexture_panel")
 layout_mode = 2
 theme_override_constants/separation = 1
 
-[node name="TextLabel" type="Label" parent="Box/Panel/VBox"]
+[node name="TextLabel" type="RichTextLabel" parent="Box/Panel/VBox"]
 layout_mode = 2
 size_flags_vertical = 3
-theme_override_colors/font_color = Color(0.945, 0.98, 0.933, 1)
+mouse_filter = 2
+theme_override_colors/default_color = Color(0.945, 0.98, 0.933, 1)
+theme_override_colors/font_outline_color = Color(0.122, 0.122, 0.122, 1)
+theme_override_constants/outline_size = 1
+bbcode_enabled = true
 text = "Texto"
+fit_content = true
+scroll_active = false
 autowrap_mode = 3
 
 [node name="StageLabel" type="Label" parent="Box/Panel/VBox"]

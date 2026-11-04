@@ -3,12 +3,12 @@ extends CanvasLayer
 ## Diario de evidencias (tecla J, canon 09 §6). Pestañas: Evidencias, Personas, Deducciones, Mapa y, si el juego las
 ## define, una lista de gente que se desbloquea con un flag (data/journal.json "roster"; en Rabenholz, El tren) y las
 ## fichas para identificar a la gente (data/identify.json, sistema Identification).
-## Mientras está abierto el reloj se detiene: consultar las notas no es una acción del técnico en el pueblo.
+## Mientras está abierto el reloj del día se detiene (igual que la charla y la orden de trabajo).
 
-enum Tab { EVIDENCE, PEOPLE, DEDUCTIONS, MAP, ROSTER, IDENTIFY }
+enum Tab { EVIDENCE, PEOPLE, DEDUCTIONS, MAP, ROSTER, IDENTIFY, CASES }
 
 const BASE_TAB_KEYS: Array[String] = ["ui_journal_tab_evidence", "ui_journal_tab_people", "ui_journal_tab_deductions", "ui_journal_tab_map"]
-const NUMBER_KEYS: Array[Key] = [KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6]
+const NUMBER_KEYS: Array[Key] = [KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8]
 const SHEETS_DIR: String = "res://assets/generated_assets/sprites/npcs/%s_sheet.png"
 const PROTAGONIST_SHEET: String = "res://assets/generated_assets/sprites/protagonist_sheet.png"
 const PORTRAITS_DIR: String = "res://assets/generated_assets/portraits/%s.png"
@@ -43,6 +43,7 @@ var _list: VBoxContainer
 var _detail_panel: VBoxContainer
 ## El detalle va con scroll: una ficha con muchas cosas anotadas no estira el diario fuera de la pantalla.
 var _detail_scroll: ScrollContainer
+var _board: Control   # la pestaña «Casos» (ui/case_board_view.gd)
 var _tab: int = Tab.EVIDENCE
 ## Las cuatro de siempre y las que defina el juego (lista, identificar), en orden; `_tab_ids` dice cuál es cuál.
 var _tab_keys: Array[String] = []
@@ -64,6 +65,9 @@ var _items: Array[Dictionary] = []
 var _rows: Array[Button] = []
 var _selected: int = 0
 var _icons: Dictionary = {}
+## Guía (data/game.json "journal.guide"): el cartel de ayuda abierto y lo que piensa el técnico al cerrar.
+var _tip: Control = null
+var _close_think: String = ""
 
 
 func _ready() -> void:
@@ -78,6 +82,8 @@ func _ready() -> void:
 	if Identification.enabled():
 		_tab_keys.append(Identification.config().get("tab_key", ""))
 		_tab_ids.append(Tab.IDENTIFY)
+	_tab_keys.append("ui_journal_tab_cases")
+	_tab_ids.append(Tab.CASES)
 	# data/game.json "journal.hidden_tabs": pestañas que el juego no muestra (evidence, people, deductions, map, roster,
 	# identify). Se sacan de la lista, así las teclas 1-9 siguen corridas.
 	var hidden: Array = GameConfig.value("journal.hidden_tabs", [])
@@ -85,6 +91,24 @@ func _ready() -> void:
 		if String(Tab.keys()[_tab_ids[i]]).to_lower() in hidden:
 			_tab_ids.remove_at(i)
 			_tab_keys.remove_at(i)
+	# "journal.tab_names": otro nombre para una pestaña ({"cases": clave}); "journal.first_tabs": las que van primero, en
+	# ese orden (la primera es la que se abre).
+	var names: Dictionary = GameConfig.value("journal.tab_names", {})
+	for i in _tab_ids.size():
+		var id: String = String(Tab.keys()[_tab_ids[i]]).to_lower()
+		if names.has(id):
+			_tab_keys[i] = str(names[id])
+	var first: Array = GameConfig.value("journal.first_tabs", [])
+	for n in range(first.size() - 1, -1, -1):
+		var at: int = _tab_ids.find(Tab.keys().find(str(first[n]).to_upper()))
+		if at > 0:
+			_tab_ids.insert(0, _tab_ids.pop_at(at))
+			_tab_keys.insert(0, _tab_keys.pop_at(at))
+	LoopManager.knowledge_gained.connect(func(flag: String) -> void:
+		if flag == GameConfig.flag("has_journal"):
+			_guide("on_get"))
+	JournalManager.flag_noted.connect(func(flag: String) -> void: _guide("first_clue", flag))
+	JournalManager.name_learned.connect(func(person_id: String) -> void: _guide("first_name", person_id))
 	Identification.confirmed.connect(_on_cards_confirmed)
 	Identification.changed.connect(func() -> void:
 		if _root.visible and _current_tab() == Tab.IDENTIFY:
@@ -100,7 +124,8 @@ func _exit_tree() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if _root.visible or not event.is_action_pressed("journal"):
 		return
-	if GameManager.state != GameManager.State.PLAYING or DialogueManager.is_active \
+	# Se puede abrir en medio de una charla: el reloj ya está parado (GameManager.sync_day_clock).
+	if GameManager.state != GameManager.State.PLAYING \
 			or WorkManager.active_task != "" or WorkOrderPanel.is_open or DeductionScreen.is_playing:
 		return
 	if not JournalManager.has_journal():
@@ -146,10 +171,10 @@ func _input(event: InputEvent) -> void:
 
 
 func open() -> void:
-	GameManager.pause_game()
 	is_open = true
 	_root.visible = true
 	AudioManager.play_sfx("journal_open", -4.0)
+	GameManager.sync_day_clock()   # solo el reloj del día; igual que charla y orden de trabajo
 	for i in _tab_buttons.size():
 		_tab_buttons[i].visible = _tab_shown(i)
 	_set_tab(_tab if _tab_shown(_tab) else 0)
@@ -158,11 +183,75 @@ func open() -> void:
 func close() -> void:
 	if not _root.visible:
 		return
+	if _tip != null:
+		_tip.queue_free()
+		_tip = null
+	if _close_think != "" and is_instance_valid(ZoneManager.player):
+		ZoneManager.player.think(tr(_close_think), 4.5)
+	_close_think = ""
 	_close_stamp()
 	_mark_current_seen()
 	_root.visible = false
 	is_open = false
-	GameManager.resume_game()
+	GameManager.sync_day_clock()
+	# Lo que se pensó en «Casos» se cobra ahora, con el técnico de vuelta en el mundo (Cases.spend_thinking).
+	var thought: int = Cases.spend_thinking()
+	if thought > 0:
+		TimeManager.advance_minutes(thought)
+		Toasts.show_key("ui_cases_thought", [thought])   # si sigue la charla, el reloj queda parado
+
+
+# --- Guía ---------------------------------------------------------------------------------------
+
+## Guía del diario (data/game.json "journal.guide"): la primera vez que se consigue ("on_get"), con la primera pista
+## anotada ("first_clue") y con el primer nombre ("first_name"), el diario se abre solo apenas termina la charla, en la
+## pestaña "tab", con el cartel "tip" (%s = la pista o el nombre) y, al cerrarlo, el técnico piensa "think". Cada paso,
+## una vez por partida (JournalManager.guide_done).
+func _guide(step: String, subject: String = "") -> void:
+	var cfg: Dictionary = GameConfig.value("journal.guide", {}).get(step, {})
+	if cfg.is_empty() or step in JournalManager.guide_done or not JournalManager.has_journal():
+		return
+	JournalManager.guide_done.append(step)
+	while not _guide_can_open():
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return
+	open()
+	var tab_at: int = _tab_ids.find(Tab.keys().find(str(cfg.get("tab", "")).to_upper()))
+	if tab_at >= 0 and _tab_shown(tab_at):
+		_set_tab(tab_at)
+	var shown: String = subject
+	if step == "first_clue":
+		shown = tr("flag_" + subject)
+	elif step == "first_name":
+		shown = JournalManager.display_name(subject)
+		var card_at: int = _items.map(func(it: Dictionary) -> String:
+			return Identification.card(it.get("card", "")).get("person", "")).find(subject)
+		if card_at >= 0:
+			_select(card_at)
+	var text: String = tr(str(cfg.get("tip", "")))
+	_show_tip(text % shown if "%s" in text else text)
+	_close_think = str(cfg.get("think", ""))
+
+
+## Se abre recién con el técnico libre: sin charla, cartel, tarea ni el diario ya abierto.
+func _guide_can_open() -> bool:
+	return not _root.visible and not DialogueManager.is_active and not Notices.is_busy() \
+			and GameManager.state == GameManager.State.PLAYING and WorkManager.active_task == "" \
+			and not WorkOrderPanel.is_open and not DeductionScreen.is_playing
+
+
+func _show_tip(text: String) -> void:
+	var box := PanelContainer.new()
+	box.add_theme_stylebox_override("panel", UiStyle.panel(true))
+	box.position = Vector2(40, 262)
+	box.custom_minimum_size = Vector2(560, 0)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var label := _wrapped(text, UiStyle.ACCENT, 544.0)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(label)
+	_root.add_child(box)
+	_tip = box
 
 
 # --- Construcción -------------------------------------------------------------------------------
@@ -229,6 +318,15 @@ func _build() -> void:
 	_detail_panel.add_theme_constant_override("separation", 3)
 	_detail_scroll.add_child(_detail_panel)
 
+	_board = load("res://addons/jornada/ui/case_board_view.gd").new()
+	_board.type_colors = TYPE_COLORS
+	_board.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_board.visible = false
+	body.add_child(_board)
+	Cases.changed.connect(func() -> void:
+		if _root.visible and _current_tab() == Tab.CASES:
+			_summary.text = _board.summary())
+
 	var footer := HBoxContainer.new()
 	column.add_child(footer)
 	footer.add_child(UiStyle.label(tr("ui_journal_nav"), UiStyle.DIM))
@@ -278,8 +376,14 @@ func _rebuild() -> void:
 	_rows.clear()
 	_summary.text = ""
 	_list_scroll.custom_minimum_size.x = 286.0
-	_detail_scroll.get_parent().get_child(1).visible = true   # separador
-	_detail_scroll.visible = true
+	var on_board: bool = _current_tab() == Tab.CASES
+	_list_scroll.visible = not on_board
+	_detail_scroll.get_parent().get_child(1).visible = not on_board   # separador
+	_detail_scroll.visible = not on_board
+	_board.visible = on_board
+	if on_board:
+		_board.refresh()
+		_summary.text = _board.summary()
 	match _current_tab():
 		Tab.EVIDENCE: _build_evidence()
 		Tab.PEOPLE: _build_people()
@@ -714,6 +818,19 @@ func _build_identify() -> void:
 			_add_row(_identify_item(c, group))
 
 
+## Los lugares donde el jugador vio a esa persona con el diario encima (JournalManager.sightings), en el orden en que
+## la fue viendo: «Gasthof Adler, Taquilla y Estación».
+func _seen_places(person_id: String) -> String:
+	var names: Array[String] = []
+	for zone_id: String in JournalManager.sightings.get(person_id, {}):
+		var place: String = tr("zone_" + zone_id)
+		if not place in names:
+			names.append(place)
+	if names.size() < 2:
+		return "" if names.is_empty() else names[0]
+	return tr("ui_journal_ident_seen_and") % [", ".join(names.slice(0, -1)), names[-1]]
+
+
 func _cycle_ident_filter() -> void:
 	var filters: Array[String] = Identification.FILTERS
 	_ident_filter = filters[(filters.find(_ident_filter) + 1) % filters.size()]
@@ -727,6 +844,9 @@ func _identify_item(c: Dictionary, group: Dictionary) -> Dictionary:
 	var mark: String = Identification.mark_of(c["id"])
 	var shown: String = noted if noted != "" else "?"
 	var lines: Array[Dictionary] = [{"text": tr(c.get("look_key", ""))}]
+	var places: String = _seen_places(c.get("person", ""))
+	if places != "":   # dónde lo vio el jugador, aparte y solo lo real: «Vista en: Taquilla y Estación»
+		lines.append({"text": tr(c.get("seen_label_key", "ui_journal_ident_seen_m")) % places, "color": UiStyle.DIM})
 	for clue_key: String in Identification.clues(c["id"]):
 		lines.append({"text": "· " + tr(clue_key)})
 	return {
@@ -748,7 +868,6 @@ func _fill_identify_detail(card_id: String) -> void:
 	_pick_buttons.clear()
 	if Identification.is_confirmed(card_id):
 		return
-	_detail_panel.add_child(_wrapped(tr("ui_journal_ident_hint"), UiStyle.DIM))
 	var fields: Array = Identification.fields_of(card_id)
 	if fields.size() == 1:
 		_ident_field = fields[0]
@@ -759,11 +878,16 @@ func _fill_identify_detail(card_id: String) -> void:
 		for field_id: String in fields:
 			var value: String = Identification.option_text(field_id, Identification.guess_of(card_id, field_id))
 			var label: String = "%s: %s" % [tr(Identification.field(field_id).get("title_key", "")), value if value != "" else "?"]
+			if Identification.is_field_confirmed(card_id, field_id):
+				label += "  " + tr("ui_journal_ident_field_confirmed")   # se lo preguntó y dijo que sí: no se cambia
 			var chosen: String = field_id
-			_add_pick_button(label, false, func() -> void:
+			var field_button: Button = _add_pick_button(label, false, func() -> void:
 				_ident_field = chosen
 				_resume_pick = _pick_via_key
 				_refresh_selection())
+			if value == "" and Identification.options_available(field_id).is_empty():
+				field_button.disabled = true   # todavía no oyó ni leyó ningún nombre para este dato: nada que elegir
+				field_button.add_theme_color_override("font_disabled_color", UiStyle.DIM)
 		var mark: String = Identification.mark_of(card_id)
 		_add_pick_button(tr("ui_journal_ident_mark") % tr("ui_journal_ident_mark_" + (mark if mark != "" else "none")), false,
 				func() -> void:
@@ -771,6 +895,8 @@ func _fill_identify_detail(card_id: String) -> void:
 					Identification.cycle_mark(card_id))
 		if Identification.guesses.has(card_id):
 			_add_pick_button(tr("ui_journal_ident_clear"), false, func() -> void: Identification.clear(card_id))
+	# La ayuda, al pie: no en medio de la ficha.
+	_detail_panel.add_child(_wrapped(tr("ui_journal_ident_hint"), UiStyle.DIM))
 	if _resume_pick:
 		_resume_pick = false
 		_start_picking()
@@ -786,8 +912,18 @@ func _fill_ident_options(card_id: String, field_id: String, back: bool) -> void:
 	if options.is_empty():
 		_detail_panel.add_child(_wrapped(tr("ui_journal_ident_no_names"), UiStyle.DIM))
 	var current: String = Identification.guess_of(card_id, field_id)
+	if Identification.is_field_confirmed(card_id, field_id):
+		options = []
+		_detail_panel.add_child(_wrapped(Identification.option_text(field_id, current) + "  "
+				+ tr("ui_journal_ident_field_confirmed"), UiStyle.OK))
 	for o: Dictionary in options:
 		var label: String = tr(o["key"])
+		if Identification.is_ruled_out(card_id, field_id, o["id"]):
+			# Se lo preguntó y dijo que no: queda a la vista, tachado, para no volver a probar.
+			var crossed: Button = _add_pick_button(label + "  " + tr("ui_journal_ident_ruled_out"), false, func() -> void: pass)
+			crossed.add_theme_color_override("font_color", UiStyle.DIM)
+			crossed.disabled = true
+			continue
 		var elsewhere: bool = Identification.field(field_id).get("unique", false) and current != o["id"] \
 				and Identification.guesses.keys().any(func(k: String) -> bool: return Identification.guess_of(k, field_id) == o["id"])
 		if elsewhere:
@@ -804,7 +940,7 @@ func _fill_ident_options(card_id: String, field_id: String, back: bool) -> void:
 			_ident_field = ""
 			_resume_pick = _pick_via_key
 			_refresh_selection())
-	elif current != "":
+	elif current != "" and not Identification.is_field_confirmed(card_id, field_id):
 		_add_pick_button(tr("ui_journal_ident_clear"), false, func() -> void: Identification.clear(card_id, field_id))
 
 

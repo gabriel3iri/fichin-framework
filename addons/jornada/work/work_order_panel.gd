@@ -1,7 +1,7 @@
 class_name WorkOrderPanel
 extends CanvasLayer
 ## Orden de trabajo (tecla T): tareas obligatorias y opcionales, avance y salario.
-## No pausa el juego: mirarla también cuesta tiempo.
+## Mientras está abierta el reloj del día se detiene (igual que el diario y la charla).
 
 ## Lo consulta el menú de pausa para no abrirse encima de la orden de trabajo.
 static var is_open: bool = false
@@ -32,18 +32,32 @@ func _ready() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not event.is_action_pressed("work_order"):
 		if _panel.visible and event.is_action_pressed("ui_cancel"):
-			_panel.visible = false
-			is_open = false
+			_close()
 			get_viewport().set_input_as_handled()
 		return
-	if DialogueManager.is_active or WorkManager.active_task != "" or Journal.is_open:
+	if WorkManager.active_task != "" or Journal.is_open:
 		return
-	_panel.visible = not _panel.visible
-	is_open = _panel.visible
 	if _panel.visible:
-		AudioManager.play_sfx("journal_open", -4.0)
-		_refresh()
+		_close()
+	else:
+		_open()
 	get_viewport().set_input_as_handled()
+
+
+func _open() -> void:
+	_panel.visible = true
+	is_open = true
+	AudioManager.play_sfx("journal_open", -4.0)
+	_refresh()
+	GameManager.sync_day_clock()
+
+
+func _close() -> void:
+	if not _panel.visible:
+		return
+	_panel.visible = false
+	is_open = false
+	GameManager.sync_day_clock()
 
 
 func _refresh() -> void:

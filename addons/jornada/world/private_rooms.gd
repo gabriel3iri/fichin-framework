@@ -3,16 +3,24 @@ extends Node
 ##   - Ocupante adentro  -> se GOLPEA; abre (diálogo data/dialogue/door_<ocupante>.json) o dice que no.
 ##   - Ocupante afuera   -> cerrada con llave: segunda pulsación de E para FORZARLA (lleva unos segundos y minutos de juego).
 ##     Si alguien en la zona de la puerta lo ve, el intento falla y sube la sospecha.
-##   - Si el ocupante vuelve y encuentra al jugador adentro: sospecha y lo echa.
+##   - Si el ocupante vuelve y encuentra al jugador adentro: sospecha y lo echa. Con la entrada `door_<ocupante>_caught` en su
+##     diálogo de la puerta, se lo dice en una charla y lo saca al pasillo; si lo ve forzando la puerta, también.
+##   - Con "admits": false el ocupante no deja pasar a nadie: golpear solo trae su respuesta (el de la cuatro).
+##   - Con la ganzúa (el flag `quiet_flag` del archivo) se abre en `quiet_seconds`, sin ruido y sin que nadie lo note.
 ## Todo se olvida al empezar el loop.
 
 const PATH: String = "res://data/private_rooms.json"
+
+## Lo vieron forzando una puerta (no el dueño): `times` = cuántas veces hoy, contando esta. El juego decide qué pasa
+## después (en Rabenholz, quien lo vio llama al dueño de la posada y, a la tercera, va a buscar a los carabineros).
+signal seen_forcing(room: String, witness: NpcActor, times: int)
 
 var _config: Dictionary = {}
 var _permit: Dictionary = {}       # habitación -> true: el ocupante dejó pasar (hasta que el jugador salga)
 var _forced: Dictionary = {}       # habitación -> true: cerradura forzada este loop
 var _caught: Dictionary = {}       # habitación -> true: ya lo encontraron adentro este loop
 var _pending: Dictionary = {}      # habitación -> ms hasta cuando vale la segunda pulsación
+var _seen_times: int = 0           # veces que hoy lo vieron forzando una puerta (cualquiera)
 var _busy: bool = false
 var _check_timer: float = 0.0
 var _bar_layer: CanvasLayer
@@ -26,6 +34,7 @@ func _ready() -> void:
 
 
 func reset() -> void:
+	_seen_times = 0
 	_permit.clear()
 	_forced.clear()
 	_caught.clear()
@@ -89,7 +98,7 @@ func _knock(door: Door, room: String, rule: Dictionary) -> bool:
 	AudioManager.play_sfx("door_knock", -2.0)
 	await get_tree().create_timer(setting("knock_seconds", 1.4)).timeout
 	var occupant: String = rule["occupant"]
-	var accepts: bool = GameManager.suspicion < int(setting("suspicion_refuse_from", 60.0))
+	var accepts: bool = rule.get("admits", true) and GameManager.suspicion < int(setting("suspicion_refuse_from", 60.0))
 	if not DialogueManager.start("door_" + occupant):
 		Toasts.show_key("toast_door_no_answer")
 		return false
@@ -103,10 +112,13 @@ func _knock(door: Door, room: String, rule: Dictionary) -> bool:
 
 func _force(door: Door, room: String, rule: Dictionary) -> bool:
 	_pending.erase(room)
-	AudioManager.play_sfx("door_force", -2.0)
-	var duration: float = setting("force_seconds", 2.6)
+	var quiet: bool = str(_config.get("quiet_flag", "")) != "" and LoopManager.has_knowledge(str(_config["quiet_flag"]))
+	if not quiet:
+		AudioManager.play_sfx("door_force", -2.0)
+	var duration: float = setting("quiet_seconds", 1.2) if quiet else setting("force_seconds", 2.6)
 	_show_bar(true)
-	var witness: NpcActor = _witness(rule)
+	var witness: NpcActor = null if quiet else _witness(rule)
+	var occupant: String = rule["occupant"]
 	var seen_at: float = duration * 0.6
 	var elapsed: float = 0.0
 	while elapsed < duration:
@@ -115,27 +127,40 @@ func _force(door: Door, room: String, rule: Dictionary) -> bool:
 		_bar.value = clampf(elapsed / duration, 0.0, 1.0) * 100.0
 		if witness != null and elapsed >= seen_at:
 			_show_bar(false)
-			witness.show_bark(tr("bark_door_seen"))
 			GameManager.add_suspicion(int(setting("suspicion_seen", 10.0)))
 			TimeManager.advance_minutes(int(setting("force_minutes", 3.0)))
 			AudioManager.play_sfx("door_locked", -2.0)
+			if witness.npc_id == occupant and _has_caught_line(occupant):
+				DialogueManager.start("door_" + occupant, "door_%s_caught" % occupant)   # el dueño: lo frena él mismo
+			else:
+				_seen_times += 1
+				witness.show_bark(tr("bark_door_seen"))
+				seen_forcing.emit(room, witness, _seen_times)
 			return false
 	_show_bar(false)
-	TimeManager.advance_minutes(int(setting("force_minutes", 3.0)))
+	TimeManager.advance_minutes(1 if quiet else int(setting("force_minutes", 3.0)))
 	_forced[room] = true
-	Toasts.show_key("toast_door_forced")
+	Toasts.show_key("toast_door_picked" if quiet else "toast_door_forced")
 	door.enter()
 	return true
 
 
-## Alguien que ve la puerta: cualquier personaje de las zonas de testigos (el jugador está en la misma).
+## Alguien que ve la puerta: cualquier personaje de las zonas de testigos (el jugador está en la misma); primero, el dueño.
 func _witness(rule: Dictionary) -> NpcActor:
 	var zones: Array = rule.get("witness_zones", [])
+	var found: NpcActor = null
 	for node in get_tree().get_nodes_in_group("npc_actors"):
 		var actor := node as NpcActor
 		if actor != null and actor.zone in zones and actor.zone == ZoneManager.current_zone and actor.visible:
-			return actor
-	return null
+			if actor.npc_id == rule.get("occupant", ""):
+				return actor
+			if found == null:
+				found = actor
+	return found
+
+
+func _has_caught_line(occupant: String) -> bool:
+	return ("door_%s_caught" % occupant) in DialogueManager.entry_ids("door_" + occupant)
 
 
 func _until_dialogue_ends(npc_id: String) -> void:
@@ -172,11 +197,27 @@ func _process(delta: float) -> void:
 	var actor: NpcActor = occupant_inside(room)
 	if actor == null:
 		return
+	var occupant_id: String = rooms()[room]["occupant"]
+	if DialogueManager.is_active and _has_caught_line(occupant_id):
+		return   # mirando algo (la valija): lo encara apenas termina, no lo deja pasar
 	_caught[room] = true
-	actor.show_bark(tr("bark_room_caught"))
 	GameManager.add_suspicion(int(setting("suspicion_caught", 10.0)))
+	if _has_caught_line(occupant_id):
+		_evict(room, occupant_id)
+		return
+	actor.show_bark(tr("bark_room_caught"))
 	Toasts.show_key("toast_room_caught")
 	_permit[room] = true   # ya está enterado: no se repite hasta que el jugador salga
+
+
+## Lo encuentra adentro: se lo dice en una charla y, al terminar, el jugador sale al pasillo (por la puerta, con fundido).
+func _evict(room: String, occupant: String) -> void:
+	_permit[room] = true
+	if not DialogueManager.start("door_" + occupant, "door_%s_caught" % occupant):
+		return
+	await _until_dialogue_ends("door_" + occupant)
+	if ZoneManager.current_zone == room:
+		ZoneManager.change_zone(str(rooms()[room]["from"]))
 
 
 func _on_zone_changed(zone_id: String) -> void:

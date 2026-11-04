@@ -75,8 +75,24 @@ func resume_game() -> void:
 	if state != State.PAUSED:
 		return
 	get_tree().paused = false
-	TimeManager.start()
 	_set_state(State.PLAYING)
+	sync_day_clock()
+
+
+## ¿Hay algo que deba detener el reloj del día? (charla, diario, orden, o pausa del juego). Lo pensado en la pestaña
+## «Casos» se cobra al cerrar el diario (Cases.spend_thinking).
+func day_clock_held() -> bool:
+	return state == State.PAUSED or DialogueManager.is_active or Journal.is_open or WorkOrderPanel.is_open
+
+
+## El reloj de la jornada se detiene con charla, diario u orden de trabajo. Llamar al abrir/cerrar cualquiera.
+func sync_day_clock() -> void:
+	if state == State.NOT_STARTED:
+		return
+	if day_clock_held():
+		TimeManager.pause()
+	else:
+		TimeManager.start()
 
 
 func add_suspicion(delta: int) -> void:

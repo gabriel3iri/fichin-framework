@@ -25,6 +25,7 @@ var active_task: String = ""
 
 var _done: Dictionary = {}       # task_id -> true (este loop)
 var _mastered: Dictionary = {}   # task_id -> true (persiste entre loops)
+var _times: Dictionary = {}      # task_id -> cuántas veces se terminó, en todas las jornadas (persiste y se guarda)
 var _deadline_checked: bool = false
 var _host: CanvasLayer
 
@@ -38,6 +39,11 @@ func _ready() -> void:
 			has_deadline = true
 	LoopManager.loop_started.connect(_on_loop_started)
 	TimeManager.minute_changed.connect(_on_minute_changed)
+	SaveManager.register_section("work_times", func() -> Variant: return _times.duplicate(),
+		func(saved: Variant) -> void:
+			_times.clear()
+			for id: Variant in (saved if saved is Dictionary else {}):
+				_times[str(id)] = int(saved[id]))
 
 
 func mastered_ids() -> Array:
@@ -62,6 +68,7 @@ func restore_done(ids: Array) -> void:
 
 func reset_all() -> void:
 	_mastered.clear()
+	_times.clear()
 	_done.clear()
 	_deadline_checked = false
 	active_task = ""
@@ -81,6 +88,12 @@ func has_order() -> bool:
 
 func is_done(task_id: String) -> bool:
 	return _done.has(task_id)
+
+
+## Cuántas veces terminó esta tarea, contando todas las jornadas (la primera vez es 1). Lo que piensa al terminarla
+## depende de esto, no del número de jornada: una tarea que nunca hizo es nueva aunque sea el tercer día.
+func times_done(task_id: String) -> int:
+	return int(_times.get(task_id, 0))
 
 
 func completed_count() -> int:
@@ -156,12 +169,23 @@ func _finish(task: Dictionary, success: bool, data: Dictionary) -> void:
 		Toasts.show_key(data["toast_key"])   # el minijuego avisa qué pasó (una descarga, una pieza rota...)
 	if success:
 		_done[task["id"]] = true
+		_times[task["id"]] = times_done(task["id"]) + 1
 		if not data.get("forced", false) and data.get("extra_minutes", 0) == 0:
 			_mastered[task["id"]] = true
 		Wallet.credit(Wallet.pay_per_task())   # pago por tarea terminada (antes solo se mencionaba en la orden)
 		GameManager.add_suspicion(SUSPICION_ON_COMPLETE)
 		_grant_trust()
 		Toasts.show_key("toast_task_done", [tr(task["name_key"])])
+		# Todas hechas en una jornada: la primera vez, el flag del rol "all_tasks_done" (data/game.json "flags"; el
+		# juego lo pone en persistent_flags para que quede: ya conoce el trabajo); las siguientes, el de
+		# "all_tasks_done_again" (de ese día: quien recibe la entrega no felicita igual la primera que las otras).
+		var all_done: String = GameConfig.flag("all_tasks_done")
+		if all_done != "" and completed_count() >= tasks.size():
+			var again: String = GameConfig.flag("all_tasks_done_again")
+			if not LoopManager.has_knowledge(all_done):
+				LoopManager.gain_knowledge(all_done)
+			elif again != "":
+				LoopManager.gain_knowledge(again)
 	else:
 		if task.get("fail_loses_trust", false):
 			LoopManager.lose_trust(GameConfig.value("work.boss", ""))   # quien da la orden
@@ -186,10 +210,21 @@ func _grant_reveals(task: Dictionary) -> void:
 			LoopManager.gain_knowledge(reveal["flag"])
 
 
-## Completar tareas da confianza con quien dio la orden (data/game.json, "work": boss y trust_at_tasks).
+## Completar tareas da confianza con quien dio la orden (data/game.json, "work": boss y trust_at_tasks), desde la jornada
+## trust_from_loop. Antes (en Rabenholz, el primer día: todavía no hay de quién preguntarle) terminarlas todas solo la
+## deja en 0 si estaba en negativo.
 func _grant_trust() -> void:
 	var boss: String = GameConfig.value("work.boss", "")
 	var levels: Dictionary = GameConfig.value("work.trust_at_tasks", {})
+	if LoopManager.loop_number < int(GameConfig.value("work.trust_from_loop", 1)):
+		var all_tasks: int = levels.keys().map(func(k: String) -> int: return int(k)).max() if not levels.is_empty() else 0
+		if boss != "" and completed_count() >= all_tasks and Trust.level(boss) < 0:
+			Trust.change(boss, -Trust.level(boss))
+		return
+	# "trust_after_all_done": mientras nunca terminó todo, el trabajo no le gana confianza (la primera entrega completa
+	# llega tarde: sigue enojada); desde la jornada siguiente, sí.
+	if GameConfig.value("work.trust_after_all_done", false) and not LoopManager.has_knowledge(GameConfig.flag("all_tasks_done")):
+		return
 	for needed: String in levels:
 		if boss != "" and completed_count() >= int(needed):
 			LoopManager.gain_knowledge("%s_trust_%d" % [boss, int(levels[needed])])

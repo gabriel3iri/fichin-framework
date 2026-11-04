@@ -1,6 +1,9 @@
 extends Node
-## Deducciones automáticas (canon 05 §8 y 09 §7). Nunca se obtienen directamente: cuando el jugador
-## reúne las piezas, el sistema concede el flag y avisa para que salte la pantalla de deducción.
+## Deducciones (canon 05 §8 y 09 §7). Nunca se obtienen directamente. Dos modos (data/game.json "deductions.manual"):
+##   - automático: cuando el jugador reúne las piezas, el sistema concede el flag y avisa;
+##   - manual: el jugador las arma en el diario (Cases, pestaña «Casos»): agrupa las pistas justas en un hilo y lo
+##     resuelve (`resolve`). Juntar las piezas no alcanza: hay que darse cuenta de qué va con qué. Las que tienen
+##     "auto": true (conteos, como «los veintiuno nombrados») se resuelven solas igual.
 ## Las definiciones salen de data/journal.json (generado por tools/gen_journal.py).
 
 signal deduction_made(deduction_id: String)
@@ -52,7 +55,45 @@ func is_satisfied(def: Dictionary) -> bool:
 func check(announce: bool) -> void:
 	for def: Dictionary in _defs:
 		var id: String = def["id"]
+		if manual() and not def.get("auto", false):
+			continue   # en modo manual, solo las marcadas "auto" (conteos, no razonamientos) se resuelven solas
 		if not LoopManager.has_knowledge(id) and is_satisfied(def):
 			LoopManager.gain_knowledge(id, true)
 			if announce:
 				deduction_made.emit(id)
+
+
+func manual() -> bool:
+	return bool(GameConfig.value("deductions.manual", false))
+
+
+func definition(deduction_id: String) -> Dictionary:
+	for def: Dictionary in _defs:
+		if def["id"] == deduction_id:
+			return def
+	return {}
+
+
+## La deducción que forman exactamente estas pistas (todas las obligatorias, alguna de las alternativas si las hay, y
+## ninguna que sobre), o "" si no forman ninguna. No mira si el jugador ya la resolvió.
+func matching(clues: Array) -> String:
+	if clues.is_empty():
+		return ""
+	for def: Dictionary in _defs:
+		var all_of: Array = def["all_of"]
+		var any_of: Array = def["any_of"]
+		if not all_of.all(func(f: String) -> bool: return f in clues):
+			continue
+		if not any_of.is_empty() and not any_of.any(func(f: String) -> bool: return f in clues):
+			continue
+		if clues.all(func(f: String) -> bool: return f in all_of or f in any_of):
+			return def["id"]
+	return ""
+
+
+## El jugador la armó: se concede y se anuncia como cualquier deducción.
+func resolve(deduction_id: String) -> void:
+	if deduction_id == "" or LoopManager.has_knowledge(deduction_id):
+		return
+	LoopManager.gain_knowledge(deduction_id, true)
+	deduction_made.emit(deduction_id)

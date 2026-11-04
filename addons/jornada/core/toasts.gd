@@ -86,11 +86,12 @@ func pending_notes() -> Array[String]:
 	return _pending_notes
 
 
-## El jugador anotó lo de la conversación: un solo aviso con el sonido.
+## El jugador anotó lo de la conversación: un solo aviso con la lapicera (la campanita ya sonó al descubrirlo, cuando
+## la caja terminó de escribir esa línea).
 func commit_notes() -> void:
 	if _pending_notes.is_empty():
 		return
-	AudioManager.play_sfx("knowledge_gained", -4.0)
+	AudioManager.play_sfx("ui_click", -2.0)
 	show_key("toast_notes" if _pending_notes.size() > 1 else "toast_evidence", [_pending_notes.size()] if _pending_notes.size() > 1 else [])
 	_pending_notes.clear()
 	_journal_hint()

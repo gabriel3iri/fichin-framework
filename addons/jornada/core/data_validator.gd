@@ -32,6 +32,7 @@ static func validate_all() -> int:
 	errors += _validate_notices(csv_keys)
 	errors += _validate_music()
 	errors += _validate_energy()
+	errors += _validate_trust()
 	errors += _validate_relations(csv_keys)
 	errors += _validate_speeches(csv_keys)
 	errors += _validate_script_keys(csv_keys, "res://scripts")
@@ -61,10 +62,25 @@ static func _validate_file(path: String, csv_keys: Dictionary) -> int:
 		errors += _check_no_deductions(entry.get("reveals", []), where)
 		errors += _check_effects(entry.get("effects", []), where)
 		errors += _check_next(entry.get("next", ""), ids, where)
+		if entry.has("options_of"):
+			errors += _check_next(entry["options_of"], ids, where + " options_of")
 		if entry.has("learns_name") and not str(entry["learns_name"]) in ["first", "last", "full"]:
 			push_error("%s: learns_name tiene que ser first, last o full (dice '%s')" % [where, entry["learns_name"]])
 			errors += 1
+		var named: Dictionary = entry.get("names", {})
+		for npc_id: String in named:
+			if JournalManager.person_for_dialogue(npc_id) == "" or not named[npc_id] in ["first", "last", "full"]:
+				push_error("%s: names.%s tiene que ser una persona del diario y first, last o full" % [where, npc_id])
+				errors += 1
 		var cond: Dictionary = entry.get("condition", {})
+		for field: String in ["knows_name", "not_knows_name", "seen_today"]:
+			var known: Array = cond.get(field, []).duplicate()
+			for opt: Dictionary in entry.get("options", []):
+				known.append_array(opt.get(field, []))
+			for npc_id: String in known:
+				if JournalManager.person_for_dialogue(npc_id) == "":
+					push_error("%s: %s '%s' no es una persona del diario" % [where, field, npc_id])
+					errors += 1
 		for list_name in CONDITION_FLAG_LISTS:
 			errors += _check_flags(cond.get(list_name, []), where)
 		for zone_id: String in cond.get("zones", []):
@@ -236,6 +252,12 @@ static func _validate_game_config() -> int:
 	for single: String in ["journal_kept", "work_order"]:
 		if thoughts.has(single):
 			text_keys.append(thoughts[single])
+	var guide: Dictionary = GameConfig.value("journal.guide", {})
+	for step: String in guide:
+		if guide[step] is Dictionary:
+			for field: String in ["tip", "think"]:
+				if guide[step].has(field):
+					text_keys.append(guide[step][field])
 	for key: String in text_keys:
 		errors += _check_key(key, csv_keys, where)
 	# gente que existe: ficha en el diario o personaje con horario (los pasajeros no tienen ficha)
@@ -525,6 +547,28 @@ static func _validate_music() -> int:
 
 
 ## data/energy.json: números que tienen sentido y alimentos con energía.
+## data/trust.json: personas del diario y paciencia de 0 en adelante.
+static func _validate_trust() -> int:
+	var cfg: Dictionary = GameConfig.read_data("res://data/trust.json")
+	if cfg.is_empty():
+		return 0
+	var errors: int = 0
+	if int(cfg.get("min", -2)) >= 0 or int(cfg.get("max", 3)) <= 0:
+		push_error("trust.json: min tiene que ser negativo y max positivo")
+		errors += 1
+	var known: Array = JournalManager.people().map(func(p: Dictionary) -> String: return p["id"])
+	var people: Dictionary = cfg.get("people", {})
+	for pid: String in people:
+		var rules: Dictionary = people[pid]
+		if not pid in known:
+			push_error("trust.json: '%s' no es una persona del diario" % pid)
+			errors += 1
+		if int(rules.get("patience", 0)) < 0:
+			push_error("trust.json [%s]: patience va de 0 en adelante" % pid)
+			errors += 1
+	return errors
+
+
 static func _validate_energy() -> int:
 	var cfg: Dictionary = GameConfig.read_data("res://data/energy.json")
 	if cfg.is_empty():
@@ -589,6 +633,9 @@ static func _validate_relations(csv_keys: Dictionary) -> int:
 	for type_id: String in types:
 		if types[type_id].has("cap") and not String(types[type_id]["cap"]) in Relations.DEPTHS:
 			push_error("%s: el tipo '%s' tiene un cap imposible" % [where, type_id])
+			errors += 1
+		if not String(types[type_id].get("wrong_name", "")) in ["", "snub", "friend"]:
+			push_error("%s: el tipo '%s' tiene un wrong_name desconocido (snub, friend)" % [where, type_id])
 			errors += 1
 	for t: Dictionary in cfg.get("ties", []):
 		errors += check_ids.call([t.get("a", ""), t.get("b", "")], "un lazo")
@@ -666,16 +713,21 @@ static func _validate_barks(csv_keys: Dictionary) -> int:
 			push_error("%s: dialogue:true pero %s no tiene diálogo" % [where_call, call["npc"]])
 			errors += 1
 		for zone_field: String in ["zone", "npc_zone"]:
-			if call.has(zone_field) and not ZoneManager.has_zone(call[zone_field]):
-				push_error("%s: %s '%s' no existe" % [where_call, zone_field, call[zone_field]])
-				errors += 1
+			var zones: Variant = call.get(zone_field, [])
+			for zone_id: Variant in (zones if zones is Array else [zones]):
+				if not ZoneManager.has_zone(str(zone_id)):
+					push_error("%s: %s '%s' no existe" % [where_call, zone_field, zone_id])
+					errors += 1
 		for time_field: String in ["time_min", "time_max"]:
 			if call.has(time_field) and not RegEx.create_from_string("^\\d{2}:\\d{2}$").search(str(call[time_field])):
 				push_error("%s: %s tiene que ser HH:MM" % [where_call, time_field])
 				errors += 1
-		if call.has("sfx") and not ResourceLoader.exists("res://assets/audio/sfx/%s.ogg" % call["sfx"]):
-			push_error("%s: no existe el sonido '%s'" % [where_call, call["sfx"]])
-			errors += 1
+		for sfx_field: String in ["sfx", "sfx_after"]:
+			if call.has(sfx_field) and not ResourceLoader.exists("res://assets/audio/sfx/%s.ogg" % call[sfx_field]):
+				push_error("%s: no existe el sonido '%s'" % [where_call, call[sfx_field]])
+				errors += 1
+		if call.has("player_key"):
+			errors += _check_key(call["player_key"], csv_keys, where_call)
 		npcs.append(call["npc"])
 		for flag: String in call.get("knowledge", []) + call.get("not_knowledge", []) + call.get("reveals", []):
 			if not KnowledgeRegistry.FLAGS.has(flag):
@@ -794,7 +846,7 @@ static func _validate_schedules() -> int:
 				push_error("%s: zona desconocida '%s'" % [file_name, zone_id])
 				errors += 1
 			elif zone_id != "gone":
-				var cells: Array = [entry["tile"]] + entry.get("via", [])
+				var cells: Array = [entry["tile"]] + entry.get("via", []) + entry.get("roam", [])
 				if entry.get("sit", false):
 					# Sentado: el asiento (banco, banqueta) es obstáculo; hace falta una celda libre al lado para llegar.
 					cells = entry.get("via", [])
@@ -803,7 +855,7 @@ static func _validate_schedules() -> int:
 						push_error("%s: %s en %s se sienta en %s, pero no hay celda libre al lado" % [file_name, entry["time"], zone_id, seat])
 						errors += 1
 				for raw: Array in cells:
-					if ZoneManager.is_cell_solid(zone_id, Vector2i(raw[0], raw[1])):
+					if ZoneManager.is_cell_solid(zone_id, Vector2i(int(raw[0]), int(raw[1]))):
 						push_error("%s: %s en %s cae sobre una pared u objeto (celda %s)" % [file_name, entry["time"], zone_id, raw])
 						errors += 1
 	return errors

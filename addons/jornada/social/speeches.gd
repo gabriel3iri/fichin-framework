@@ -202,8 +202,9 @@ func _on_zone_changed(_zone_id: String) -> void:
 		for offset: Array in cfg.get("spots", [[0, 0]]):
 			var seat := Seat.new()
 			seat.position = (prop as Node2D).position + Vector2(float(offset[0]), float(offset[1]))
-			seat.face = _face(String(cfg.get("face", "up")))
-			seat.at_table = false
+			# un puesto puede traer su propio lado ([x, y, "left"]: las sillas de un juego de comedor miran a la mesa)
+			seat.face = _face(String(offset[2] if offset.size() > 2 else cfg.get("face", "up")))
+			seat.at_table = offset.size() > 2
 			# "toward": mira hacia la mesa más cercana de esas (si hay una a menos de toward_range px)
 			var best: float = float(cfg.get("toward_range", 40.0))
 			for other: Node in props:

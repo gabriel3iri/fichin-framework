@@ -102,8 +102,13 @@ func lose_knowledge(flag: String) -> void:
 	knowledge.erase(flag)
 
 
-## Baja un nivel de confianza con `who` (p. ej. "klara"): quita el más alto que tenga.
+## Baja un nivel de confianza con `who` (p. ej. "klara"): con confianza numérica (Trust, data/trust.json) baja el nivel;
+## si no, quita el flag más alto que tenga.
 func lose_trust(who: String) -> void:
+	var trust: Node = get_node_or_null("/root/Trust")
+	if trust != null and trust.enabled:
+		trust.change(who, -1)
+		return
 	for level in [3, 2, 1]:
 		var flag: String = "%s_trust_%d" % [who, level]
 		if has_knowledge(flag):

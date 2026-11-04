@@ -50,6 +50,10 @@ func advance_minutes(amount: int) -> void:
 
 
 func start() -> void:
+	# Charla, diario u orden de trabajo sostienen el reloj: no se puede forzar a correr.
+	if GameManager.day_clock_held():
+		running = false
+		return
 	running = true
 
 

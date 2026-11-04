@@ -36,6 +36,7 @@ func _ready() -> void:
 	_cfg = parsed.get("npcs", {})
 	_ticks_to_snap = int(parsed.get("ticks_to_snap", 3))
 	LoopManager.loop_started.connect(func(_n: int) -> void: reset())
+	LoopManager.game_reset.connect(reset)
 	DialogueManager.dialogue_started.connect(_on_dialogue_started)
 	DialogueManager.dialogue_ended.connect(_on_dialogue_ended)
 

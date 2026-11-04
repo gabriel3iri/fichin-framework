@@ -58,7 +58,8 @@ func _exit_tree() -> void:
 
 
 func _process(_delta: float) -> void:
-	var fast: bool = Input.is_physical_key_pressed(KEY_F) and not get_tree().paused and not DialogueManager.is_active
+	# F (solo en las versiones de prueba): acelera el reloj mientras se la tiene apretada.
+	var fast: bool = OS.is_debug_build() and Input.is_physical_key_pressed(KEY_F) and not get_tree().paused and not DialogueManager.is_active
 	var scale: float = FAST_FORWARD if fast else 1.0
 	if Engine.time_scale != scale:
 		Engine.time_scale = scale
@@ -66,12 +67,28 @@ func _process(_delta: float) -> void:
 
 
 ## Z (a prueba): cambia el acercamiento de la cámara (1x, 1,5x, 2x; PlayerCamera.ZOOMS).
-## N (ayuda de depuración): muestra u oculta los nombres de todos. Sin eso, el nombre sale al pasar el mouse.
+## N (solo en las versiones de prueba): muestra u oculta los nombres de todos, con un aviso para que no quede prendida
+## sin saberlo. Sin eso, el nombre sale al pasar el mouse.
+## G (solo en las versiones de prueba): adelanta una hora, minuto a minuto (los eventos y horarios de esa hora pasan
+## igual), con el tic del reloj. No con el reloj frenado (charla, diario).
 func _unhandled_input(event: InputEvent) -> void:
 	var key := event as InputEventKey
-	if key != null and key.pressed and not key.echo and key.physical_keycode == KEY_N:
-		SettingsManager.set_value("debug_name_tags", not bool(SettingsManager.get_value("debug_name_tags")))
+	if key != null and key.pressed and not key.echo and key.physical_keycode == KEY_G and OS.is_debug_build():
+		get_viewport().set_input_as_handled()
+		if not TimeManager.running or get_tree().paused or DialogueManager.is_active:
+			return
+		for i in 60:
+			if not TimeManager.running:
+				break   # llegó el fin del día
+			TimeManager.advance_minutes(1)
+		get_tree().call_group("npc_actors", "sync_to_clock")   # cada uno, donde le toca a la hora nueva
+		AudioManager.play_sfx("clock_tick", -4.0)
+		Toasts.show_key("hud_skip_hour", ["%02d:%02d" % [TimeManager.hour, TimeManager.minute]])
+	elif key != null and key.pressed and not key.echo and key.physical_keycode == KEY_N and OS.is_debug_build():
+		var on: bool = not bool(SettingsManager.get_value("debug_name_tags"))
+		SettingsManager.set_value("debug_name_tags", on)
 		get_tree().call_group("npc_actors", "refresh_name_tag")
+		Toasts.show_key("hud_names_on" if on else "hud_names_off")
 		get_viewport().set_input_as_handled()
 	elif key != null and key.pressed and not key.echo and key.physical_keycode == KEY_Z:
 		var next: int = (int(SettingsManager.get_value("camera_zoom")) + 1) % PlayerCamera.ZOOMS.size()

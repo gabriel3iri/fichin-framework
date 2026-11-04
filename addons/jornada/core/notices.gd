@@ -59,8 +59,9 @@ func _process(_delta: float) -> void:
 func _try_open() -> void:
 	if _pending.is_empty() or is_instance_valid(_card) or DialogueManager.is_active or ZoneManager.player == null:
 		return
-	if get_tree().paused:
-		return   # el diario, la pausa u otra pantalla: espera a que se cierre
+	# Pausa del juego, diario u orden: no tapar lo que el jugador está leyendo.
+	if get_tree().paused or Journal.is_open or WorkOrderPanel.is_open:
+		return
 	var notice: Dictionary = _pending.pop_front()
 	_card = NoticeCard.new()
 	_card.closed.connect(func() -> void: _card = null)

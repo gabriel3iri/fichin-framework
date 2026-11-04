@@ -10,11 +10,17 @@ const WALK_SPEED: float = 70.0
 ## Nunca empuja al jugador: se detiene a esta distancia de sus pies (x, y en px), espera y luego lo rodea.
 const PLAYER_GAP: Vector2 = Vector2(13.0, 9.0)
 const WAIT_BEFORE_SIDESTEP: float = 0.9
+## Esquives seguidos sin avanzar en su camino: después pide permiso y pasa (el jugador parado en una puerta no lo
+## deja encerrado una hora).
+const SIDESTEPS_BEFORE_PASSING: int = 3
 ## Al aparecer por una puerta o un borde espera a que no haya nadie encima (hasta MAX_ARRIVAL_WAIT s).
 const ARRIVAL_CLEARANCE: Vector2 = Vector2(18.0, 12.0)
 const MAX_ARRIVAL_WAIT: float = 5.0
 ## Minutos de juego de retraso tolerados antes de que el NPC aparezca en su sitio (los eventos del canon son fijos).
 const LATE_GRACE: int = 3
+## Minutos de juego que, después de perderlo de vista, todavía cuenta como visto: quien lo sigue por una puerta no lo ve
+## esfumarse del otro lado.
+const WATCH_GRACE: int = 5
 ## Los nombres sobre la cabeza se dibujan por encima del mundo (las frases van en globos: ui/speech_bubbles.gd).
 const TEXT_Z: int = 100
 const NAME_TAG_Y: float = -50.0
@@ -26,6 +32,13 @@ const FACES: Dictionary = {"up": Vector2.UP, "down": Vector2.DOWN, "left": Vecto
 ## Sentado (un punto del horario con "sit": true, sobre un banco o una banqueta): cuadro de sentado (CharacterFrames) y
 ## el dibujo sube hasta el asiento.
 const SIT_LIFT: float = -4.0
+## Lo que está haciendo (un punto del horario con "doing"): cada tanto agacha la cabeza sobre el trabajo, y con "item" se ve
+## el objeto (un PNG de los props: los planos en la mesa) en "item_at" px desde los pies.
+const WORK_NOD_EVERY: Vector2 = Vector2(1.6, 3.4)
+const WORK_NOD_SECONDS: float = 0.35
+## Con "roam" (celdas [x, y] o [x, y, "up"]) el punto es un recorrido: cada tanto camina a otra de esas celdas (la
+## limpiadora va de mueble en mueble con el plumero).
+const ROAM_EVERY: Vector2 = Vector2(5.0, 10.0)
 
 @export var npc_id: String = ""
 @export var sheet: Texture2D
@@ -46,7 +59,9 @@ var _route: Array = []          # {pos, zone?, instant?}
 var _facing: Vector2 = Vector2.DOWN
 var _talking: bool = false
 var _blocked_for: float = 0.0
+var _watched_at: int = -1000   # último minuto en que el jugador lo tuvo a la vista (o a su destino)
 var _block_reported: bool = false
+var _sidesteps: int = 0   # esquives desde el último paso de su camino
 var _name_tag: PanelContainer
 var _name_label: Label
 var _name_rows: int = 0    # renglones que subió para no pisarse con otro nombre
@@ -56,6 +71,13 @@ var _held: bool = false         # frenado en pleno camino (EscortSystem espera a
 var _all_names: bool = false    # tecla N (depuración): nombres de todos siempre a la vista
 var _text_drop: float = 0.0     # animales (el perro): nombre, frase y [E] bajan hasta donde empieza el dibujo
 var _sitting: bool = false
+var _doing: String = ""
+var _item: Sprite2D
+var _nod_in: float = 0.0
+var _nodding: float = 0.0
+var _roam_in: float = 0.0
+var _roam_face: String = ""      # hacia dónde mira en la celda del recorrido a la que fue ("" en el punto mismo)
+static var _props_dir: String = ""
 
 @onready var _sprite: AnimatedSprite2D = $AnimatedSprite2D
 @onready var _prompt: InteractPrompt = $Prompt
@@ -79,10 +101,11 @@ func _ready() -> void:
 	_load_schedule()
 	if not _entries.is_empty():
 		_entry_index = _entry_at(TimeManager.now_minutes())
-		_place_at(_entries[_entry_index])
+		_place_at(_target(_entry_index))
 		_on_minute_changed(0, 0)   # si ya debería estar en camino a su próximo punto, sale ahora
 	TimeManager.minute_changed.connect(_on_minute_changed)
 	ZoneManager.zone_changed.connect(_on_zone_changed)
+	LoopManager.knowledge_gained.connect(_on_knowledge_gained)
 	_refresh_presence()
 
 
@@ -91,9 +114,13 @@ func _exit_tree() -> void:
 	DialogueManager.dialogue_ended.disconnect(_on_dialogue_ended)
 	TimeManager.minute_changed.disconnect(_on_minute_changed)
 	ZoneManager.zone_changed.disconnect(_on_zone_changed)
+	LoopManager.knowledge_gained.disconnect(_on_knowledge_gained)
 
 
 func interact() -> void:
+	if DialogueManager.snubs(npc_id):   # lo hartó preguntándole lo mismo: no le habla más en este loop
+		show_bark(DialogueManager.snub_line(npc_id), UiStyle.ACCENT, 3.0)
+		return
 	if not DialogueManager.has_dialogue(npc_id) or not DialogueManager.start(npc_id):
 		if ZoneManager.player != null:
 			_facing = ZoneManager.player.global_position - global_position
@@ -102,6 +129,7 @@ func interact() -> void:
 
 func _physics_process(delta: float) -> void:
 	_update_sitting()
+	_update_activity(delta)
 	if _name_tag != null:
 		_name_tag.visible = (_all_names or _mouse_over()) and not is_barking()
 		if _name_tag.visible:
@@ -127,7 +155,7 @@ func _physics_process(delta: float) -> void:
 	var target: Vector2 = step["pos"]
 	var next: Vector2 = position.move_toward(target, WALK_SPEED * delta)
 	# El jugador manda: si el paso lo metería en el jugador, se detiene (no lo empuja) y, si el paso sigue cerrado, lo rodea.
-	if _player_near(next, PLAYER_GAP) and _gets_closer_to_player(next):
+	if _player_near(next, PLAYER_GAP) and _gets_closer_to_player(next) and _sidesteps < SIDESTEPS_BEFORE_PASSING:
 		_blocked_for += delta
 		_facing = ZoneManager.player.global_position - position
 		CharacterFrames.apply(_sprite, _facing, 0.0, false, _sitting)
@@ -137,6 +165,8 @@ func _physics_process(delta: float) -> void:
 		if _blocked_for >= WAIT_BEFORE_SIDESTEP:
 			_sidestep(target)
 			_blocked_for = 0.0
+			if _sidesteps >= SIDESTEPS_BEFORE_PASSING:
+				show_bark(tr("bark_excuse_me"), UiStyle.TEXT, 1.6)   # no hay forma de rodearlo: pasa
 		return
 	_blocked_for = 0.0
 	_block_reported = false
@@ -147,6 +177,8 @@ func _physics_process(delta: float) -> void:
 		_facing = moved
 	CharacterFrames.apply(_sprite, _facing, moved.length() / delta)
 	if position.is_equal_approx(target):
+		if not step.get("aside", false):
+			_sidesteps = 0   # avanzó en su camino
 		_route.pop_front()
 		if _route.is_empty():
 			_facing = _arrival_facing()  # al llegar queda de frente, o hacia donde diga el horario ("face")
@@ -169,13 +201,14 @@ func _player_near(at: Vector2, gap: Vector2) -> bool:
 
 ## Da un paso al costado (hacia el lado libre) para esquivar al jugador y sigue con su camino.
 func _sidestep(target: Vector2) -> void:
+	_sidesteps += 1
 	var heading: Vector2 = (target - position).normalized()
 	var side: Vector2 = Vector2(-heading.y, heading.x)
 	for sign_value in [1.0, -1.0]:
 		var candidate: Vector2 = position + side * sign_value * PLAYER_GAP.x * 1.3
 		var cell := Vector2i(floori(candidate.x / ZoneManager.TILE), floori((candidate.y - 1.0) / ZoneManager.TILE))
 		if not ZoneManager.is_cell_solid(zone, cell) and not _player_near(candidate, PLAYER_GAP):
-			_route.insert(0, {"pos": candidate})
+			_route.insert(0, {"pos": candidate, "aside": true})
 			return
 
 
@@ -238,24 +271,128 @@ func is_sitting() -> bool:
 
 
 func _update_sitting() -> void:
-	var sit: bool = false
-	if _route.is_empty() and not _detour and _entry_index >= 0 and _entry_index < _entries.size():
-		var entry: Dictionary = _entries[_entry_index]
-		sit = bool(entry.get("sit", false)) and entry["zone"] == zone and position.is_equal_approx(ZoneManager.tile_px(entry["tile"]))
+	var entry: Dictionary = _arrived_entry()
+	var sit: bool = bool(entry.get("sit", false))
 	if sit != _sitting:
 		_sitting = sit
 		_sprite.position.y += SIT_LIFT if sit else -SIT_LIFT
 
 
+## El punto del horario donde está parado (llegó y no se movió), o {} si va en camino o está en un desvío.
+func _arrived_entry() -> Dictionary:
+	if not _route.is_empty() or _detour or _entry_index < 0 or _entry_index >= _entries.size():
+		return {}
+	var entry: Dictionary = _entries[_entry_index]
+	if entry["zone"] != zone:
+		return {}
+	if position.is_equal_approx(ZoneManager.tile_px(entry["tile"])):
+		return entry
+	for spot: Array in entry.get("roam", []):
+		if position.is_equal_approx(ZoneManager.tile_px(Vector2i(int(spot[0]), int(spot[1])))):
+			return entry
+	return {}
+
+
+## Qué está haciendo ("doing" del punto del horario donde está: "plans", "telegram"...), o "" si nada en especial. Los
+## globos con "doing" solo salen mientras lo hace (ChatterSystem).
+func doing() -> String:
+	return _doing
+
+
+func _update_activity(delta: float) -> void:
+	var entry: Dictionary = _arrived_entry()
+	var now: String = "" if _talking else str(entry.get("doing", ""))
+	if now != _doing:
+		_doing = now
+		_nod_in = randf_range(WORK_NOD_EVERY.x, WORK_NOD_EVERY.y)
+		if _nodding > 0.0:
+			_nodding = 0.0
+			_sprite.offset.y = 0.0
+		_show_item(str(entry.get("item", "")) if now != "" else "", entry.get("item_at", [0, -12]))
+	_update_roam(delta, entry)
+	if _doing == "":
+		return
+	if _item != null:
+		_item.position.x = absf(_item.position.x) * (-1.0 if _facing.x < -0.1 else 1.0)   # en la mano del lado que mira
+	if _nodding > 0.0:
+		_nodding -= delta
+		if _nodding <= 0.0:
+			_sprite.offset.y = 0.0
+			if _item != null:
+				_item.rotation = 0.0
+		return
+	_nod_in -= delta
+	if _nod_in <= 0.0:
+		_nod_in = randf_range(WORK_NOD_EVERY.x, WORK_NOD_EVERY.y)
+		_nodding = WORK_NOD_SECONDS
+		_sprite.offset.y = 1.0   # agacha la cabeza sobre lo que hace
+		if _item != null and not entry.get("roam", []).is_empty():
+			_item.rotation = randf_range(-0.5, 0.5)   # sacude el plumero
+		elif _item != null and randf() < 0.5:
+			_item.flip_h = not _item.flip_h   # da vuelta la hoja
+
+
+## Recorrido ("roam"): llegó a una celda y, pasado un rato, sigue a otra (nunca a la que ocupa otro).
+func _update_roam(delta: float, entry: Dictionary) -> void:
+	var spots: Array = entry.get("roam", [])
+	if spots.is_empty() or _talking or _held:
+		return
+	_roam_in -= delta
+	if _roam_in > 0.0:
+		return
+	_roam_in = randf_range(ROAM_EVERY.x, ROAM_EVERY.y)
+	var options: Array = [[entry["tile"].x, entry["tile"].y, entry.get("face", "down"), true]]
+	options.append_array(spots)
+	options = options.filter(func(o: Array) -> bool:
+		var px: Vector2 = ZoneManager.tile_px(Vector2i(int(o[0]), int(o[1])))
+		return not px.is_equal_approx(position) and not _taken_by_other(px))
+	if options.is_empty():
+		return
+	var pick: Array = options.pick_random()
+	_roam_face = "" if pick.size() > 3 else (str(pick[2]) if pick.size() > 2 else "down")
+	_append_path(zone, position, ZoneManager.tile_px(Vector2i(int(pick[0]), int(pick[1]))))
+
+
+func _taken_by_other(px: Vector2) -> bool:
+	for node in get_tree().get_nodes_in_group("npc_actors"):
+		if node != self and node is NpcActor and (node as NpcActor).zone == zone and (node as NpcActor).position.distance_to(px) < 10.0:
+			return true
+	return false
+
+
+func _show_item(item: String, at: Variant) -> void:
+	if item == "":
+		if _item != null:
+			_item.visible = false
+		return
+	if _props_dir == "":
+		_props_dir = str(GameConfig.read_data("res://data/world.json").get("paths", {}).get("props_dir", ""))
+	var path: String = _props_dir.path_join(item + ".png")
+	if not ResourceLoader.exists(path):
+		push_warning("NpcActor %s: no existe el objeto %s" % [npc_id, path])
+		return
+	if _item == null:
+		_item = Sprite2D.new()
+		_item.centered = true
+		_item.offset = Vector2(0, -8)   # el dibujo apoya en la mitad de abajo, como los de los objetos examinables
+		add_child(_item)
+	_item.texture = load(path)
+	var offset: Array = at if at is Array and (at as Array).size() == 2 else [0, -12]
+	_item.position = Vector2(float(offset[0]), float(offset[1]))
+	_item.z_index = 1   # sobre la mesa, que se ordena por su propia base
+	_item.visible = true
+
+
 ## Frase o gesto en un globo sobre la cabeza (fastidio, comentarios, barullo; ui/speech_bubbles.gd). `seconds` = tiempo
 ## antes de desvanecerse. `style`: "speech" (lo común; con color ACCENT pasa a "accent": le habla al jugador, globo más
 ## cálido que se acomoda primero) o "address" (recita para un público: sermón, discurso; más ancho y solemne).
-func show_bark(text: String, color: Color = UiStyle.ACCENT, seconds: float = 1.6, style: StringName = &"speech") -> void:
+func show_bark(text: String, color: Color = UiStyle.ACCENT, seconds: float = 1.6, style: StringName = &"speech",
+		meta: Dictionary = {}) -> void:
 	if ChatterSystem.bubbles == null:
 		return
 	if style == &"speech" and color == UiStyle.ACCENT:
 		style = &"accent"
-	ChatterSystem.bubbles.say(self, bark_head(), text, seconds, style)
+	ChatterSystem.bubbles.say(self, bark_head(), text, seconds, style, -1, meta)
 
 
 func _on_dialogue_started(started_id: String) -> void:
@@ -294,11 +431,16 @@ func _load_schedule() -> void:
 			"depart": arrive_at,
 			"boards": raw.get("boards", false),
 			"stay_if": raw.get("stay_if", []),
+			"skip_if": raw.get("skip_if", []),
 			"zone": raw["zone"],
 			"tile": Vector2i(tile[0], tile[1]),
 			"via": via,
 			"face": raw.get("face", "down"),
 			"sit": raw.get("sit", false),
+			"doing": str(raw.get("doing", "")),
+			"item": str(raw.get("item", "")),
+			"item_at": raw.get("item_at", [0, -12]),
+			"roam": raw.get("roam", []),
 		})
 	_compute_departures()
 
@@ -331,11 +473,36 @@ func _entry_at(now: int, key: String = "minutes") -> int:
 	return idx
 
 
+## "skip_if": con alguno de esos flags, el punto no va (Klara no sube a golpear si ya dio la orden): sigue al próximo.
+func _skipped(entry: Dictionary) -> bool:
+	return (entry.get("skip_if", []) as Array).any(func(f: String) -> bool: return LoopManager.has_knowledge(f))
+
+
+## El punto al que va de verdad estando en el `idx` del horario: ese, o el primero de los siguientes que no se saltea.
+func _target(idx: int) -> Dictionary:
+	var i: int = idx
+	while i < _entries.size() - 1 and _skipped(_entries[i]):
+		i += 1
+	return _entries[i]
+
+
+## Si el flag que llega saltea el punto adonde va (o donde está), sigue al próximo sin esperar su hora.
+func _on_knowledge_gained(_flag: String) -> void:
+	if _detour or _entries.is_empty() or _entry_index < 0 or not _skipped(_entries[_entry_index]):
+		return
+	var target: Dictionary = _target(_entry_index)
+	if target != _entries[_entry_index]:
+		_plan_route(target)
+
+
 ## Hacia dónde mira al llegar a su punto: "face" del horario (up, down, left, right; los de la barra, a la barra).
 func _arrival_facing() -> Vector2:
 	if _detour or _entry_index < 0 or _entry_index >= _entries.size():
 		return Vector2.DOWN
-	return FACES.get(_entries[_entry_index].get("face", "down"), Vector2.DOWN)
+	var entry: Dictionary = _entries[_entry_index]
+	if _roam_face != "" and not position.is_equal_approx(ZoneManager.tile_px(entry["tile"])):
+		return FACES.get(_roam_face, Vector2.DOWN)   # en una celda del recorrido
+	return FACES.get(entry.get("face", "down"), Vector2.DOWN)
 
 
 func _place_at(entry: Dictionary) -> void:
@@ -376,17 +543,37 @@ func _on_minute_changed(_hour: int, _minute: int) -> void:
 		# queda esperando en el andén si el tren no sale).
 		if (_entries[idx].get("stay_if", []) as Array).any(func(f: String) -> bool: return LoopManager.has_knowledge(f)):
 			return
-		_plan_route(_entries[idx])
+		_plan_route(_target(idx))
 		return
 	# El jugador puede entretenerlo, pero no desordenar el día: pasados LATE_GRACE minutos de su hora aparece en su sitio.
-	# Solo si el jugador no lo ve (ni donde está ni adonde va): si no, se esfumaría delante suyo (Baum después de
-	# una charla en el Rathaus). A la vista, llega caminando aunque llegue tarde.
-	var entry: Dictionary = _entries[idx]
-	var watched: bool = zone == ZoneManager.current_zone or entry["zone"] == ZoneManager.current_zone
+	# Solo si el jugador no lo ve (ni donde está ni adonde va) ni lo vio hace un rato: si no, se esfumaría delante suyo
+	# (Baum después de una charla en el Rathaus; Maurer saliendo del telégrafo con el técnico detrás). A la vista, llega
+	# caminando aunque llegue tarde.
+	var entry: Dictionary = _target(idx)
+	var now: int = TimeManager.now_minutes()
+	if zone == ZoneManager.current_zone or entry["zone"] == ZoneManager.current_zone:
+		_watched_at = now
+	var watched: bool = now >= _watched_at and now - _watched_at < WATCH_GRACE   # recién lo vio: quizá lo sigue
 	if not _route.is_empty() and not entry.get("no_snap", false) and entry["zone"] != ZoneManager.GONE \
-			and not watched and TimeManager.now_minutes() - int(entry["minutes"]) >= LATE_GRACE:
+			and not watched and now - int(entry["minutes"]) >= LATE_GRACE:
 		_place_at(entry)
 		_refresh_presence()
+
+
+## Salto de reloj (la G de depuración): lo pone donde le toca a esta hora, sin caminar. Si ya salió hacia su próximo punto,
+## arranca desde el anterior y sigue caminando. Quien está en un desvío o hablando no se toca.
+func sync_to_clock() -> void:
+	if _entries.is_empty() or _detour or _talking:
+		return
+	var now: int = TimeManager.now_minutes()
+	var arrived: int = _entry_at(now)
+	_entry_index = arrived
+	_place_at(_target(arrived))
+	_refresh_presence()
+	var leaving: int = _entry_at(now, "depart")
+	if leaving != arrived:
+		_entry_index = leaving
+		_plan_route(_target(leaving))
 
 
 ## Desvío: va a `px` (pies) de `zone_id` y se queda ahí sin tocar el horario, que se retoma con end_detour() (quien busca
@@ -417,7 +604,7 @@ func end_detour() -> void:
 	if _entries.is_empty():
 		return
 	_entry_index = _entry_at(TimeManager.now_minutes(), "depart")
-	_plan_route(_entries[_entry_index])
+	_plan_route(_target(_entry_index))
 
 
 func is_on_detour() -> bool:
@@ -471,6 +658,7 @@ func redirect(zone_id: String, tile: Vector2i) -> void:
 
 func _plan_route(entry: Dictionary) -> void:
 	_route.clear()
+	_sidesteps = 0
 	var dest_zone: String = entry["zone"]
 	if dest_zone == ZoneManager.GONE and entry.get("boards", false):
 		_route.append({"instant": true, "zone": ZoneManager.GONE})   # sube al tren, que tiene al lado
@@ -647,7 +835,7 @@ func display_name() -> String:
 func _display_name() -> String:
 	var who: String = JournalManager.person_for_dialogue(npc_id)
 	if who != "":
-		return JournalManager.display_name(who)   # "El del abrigo gris" hasta que sepa cómo se llama
+		return Identification.shown_name(who)   # "El del abrigo gris" hasta que sepa cómo se llama; «Erna?» si lo supone
 	for key: String in ["chr_" + npc_id, "pax_" + npc_id]:
 		var text: String = tr(key)
 		if text != key:

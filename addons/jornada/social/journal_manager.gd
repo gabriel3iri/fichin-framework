@@ -10,6 +10,8 @@ extends Node
 signal changed
 ## Se escribió en el diario algo que el técnico ya sabía o acaba de averiguar (Toasts avisa).
 signal flag_noted(flag: String)
+## Aprendió (con el diario encima) una parte del nombre de alguien que no sabía.
+signal name_learned(person_id: String)
 
 const JOURNAL_PATH: String = "res://data/journal.json"
 ## A esta distancia (en píxeles, cubre la pantalla de 640x360) se considera que el jugador "ve" a un NPC.
@@ -23,6 +25,9 @@ var visited: Array[String] = []
 ## persona -> { zona -> [[desde, hasta], ...] } en minutos desde medianoche.
 var sightings: Dictionary = {}
 var seen_flags: Array[String] = []
+## A quién vio hoy (a la vista, como los avistamientos, pero con o sin diario): se vacía al empezar la jornada. Lo piden
+## las opciones con "seen_today" (preguntar por alguien recién después de cruzárselo).
+var seen_today: Array[String] = []
 ## Qué sabe del nombre de cada persona, en bits: FIRST (el nombre de pila: se lo preguntó o alguien se lo dijo) y
 ## LAST (el apellido: se lo dijo otro). Sin ninguno se la describe ("El del abrigo gris"). Persiste: es memoria.
 const FIRST: int = 1
@@ -34,10 +39,14 @@ var roles_heard: Array[String] = []
 ## Lo escrito en el diario: flags y, por persona, {"names": bits anotados, "met": si habló con ella}.
 var noted_flags: Array[String] = []
 var noted_people: Dictionary = {}
+## De dónde salió cada pista anotada: flag -> {"who": quien lo dijo o lo que se miró ("" si se vio), "zone", "time"}.
+var sources: Dictionary = {}
 ## Quién no tiene apellido (con el nombre ya se sabe todo, "Padre Simeon") y qué nombres se saben desde el principio
 ## (Franz, el dueño del Gasthof): data/game.json, "people".
 ## Ya se sorprendió de que el diario conserva lo anotado (loop 3).
 var journal_surprise_done: bool = false
+## Pasos de la guía del diario ya mostrados (Journal, data/game.json "journal.guide"): on_get, first_clue, first_name.
+var guide_done: Array[String] = []
 
 var _people: Array = []
 var _by_id: Dictionary = {}
@@ -61,6 +70,7 @@ func _ready() -> void:
 	LoopManager.knowledge_repeated.connect(_note_flag)
 	TimeManager.minute_changed.connect(_on_minute_changed)
 	ZoneManager.zone_changed.connect(_note_zone)
+	LoopManager.loop_started.connect(func(_n: int) -> void: seen_today.clear())
 
 
 func data() -> Dictionary:
@@ -76,12 +86,24 @@ func person(person_id: String) -> Dictionary:
 
 
 func person_for_dialogue(dialogue_id: String) -> String:
-	return _by_dialogue.get(dialogue_id, "")
+	if _by_dialogue.has(dialogue_id):
+		return _by_dialogue[dialogue_id]
+	# Golpear la puerta (data/dialogue/door_<persona>.json): es la misma persona; si no, la placa
+	# caería en name_key ("Peter Maurer") aunque todavía no se sepa el nombre.
+	if dialogue_id.begins_with("door_"):
+		var pid: String = dialogue_id.trim_prefix("door_")
+		if _by_id.has(pid):
+			return pid
+	return ""
 
 
 ## Diálogos que son de una persona (no de un objeto ni de una puerta).
 func speakers() -> Array:
 	return _by_dialogue.keys()
+
+
+func was_seen_today(person_id: String) -> bool:
+	return person_id in seen_today
 
 
 func is_met(person_id: String) -> bool:
@@ -96,18 +118,28 @@ func is_heard_of(person_id: String) -> bool:
 ## Bits del nombre que recuerda (FIRST, LAST).
 func name_bits(person_id: String) -> int:
 	var bits: int = int(names.get(person_id, 0)) | int(GameConfig.known_from_start().get(person_id, 0))
-	if is_heard_of(person_id):
+	if is_heard_of(person_id) and names_allowed():
 		bits |= FIRST
 	return _complete(person_id, bits)
 
 
+## Desde qué jornada se aprenden nombres (data/game.json "names_from_loop"; en Rabenholz, la 2: el primer día nadie
+## tiene nombre, cada uno es lo que hace). Antes, learn_name anota a la persona pero no el nombre.
+func names_allowed() -> bool:
+	return LoopManager.loop_number >= int(GameConfig.value("names_from_loop", 1))
+
+
 func learn_name(person_id: String, bits: int) -> void:
+	if not names_allowed():
+		bits = 0
 	var before: int = int(names.get(person_id, 0))
 	if before | bits != before:
 		names[person_id] = before | bits
 		changed.emit()
 	if has_journal():
 		_note_person(person_id)
+		if before | bits != before:
+			name_learned.emit(person_id)
 
 
 func learn_role(person_id: String) -> void:
@@ -183,8 +215,24 @@ func _note_flag(flag: String) -> void:
 	if flag == GameConfig.flag("has_journal") or is_noted(flag) or not has_journal():
 		return
 	noted_flags.append(flag)
+	sources[flag] = {"who": DialogueManager.speaker(), "zone": ZoneManager.current_zone, "time": TimeManager.get_time_string()}
 	changed.emit()
 	flag_noted.emit(flag)
+
+
+## «Ilse · Gasthof, 09:12»: quién lo dijo (o qué se miró) y dónde; solo el lugar si lo vio el técnico.
+func source_text(flag: String) -> String:
+	var src: Dictionary = sources.get(flag, {})
+	if src.is_empty():
+		return ""
+	var place: String = tr("zone_" + str(src.get("zone", ""))) if str(src.get("zone", "")) != "" else ""
+	var parts: Array[String] = []
+	if str(src.get("who", "")) != "":
+		parts.append(str(src["who"]))
+	if place != "":
+		parts.append(place)
+	var text: String = " · ".join(parts)
+	return text + (", " + str(src["time"]) if str(src.get("time", "")) != "" else "")
 
 
 func reset() -> void:
@@ -193,10 +241,13 @@ func reset() -> void:
 	roles_heard.clear()
 	noted_flags.clear()
 	noted_people.clear()
+	sources.clear()
 	journal_surprise_done = false
+	guide_done.clear()
 	visited.clear()
 	sightings.clear()
 	seen_flags.clear()
+	seen_today.clear()
 	changed.emit()
 
 
@@ -232,7 +283,8 @@ func _is_listed(flag: String) -> bool:
 func to_dict() -> Dictionary:
 	var d: Dictionary = {"met": met, "visited": visited, "sightings": sightings, "seen_flags": seen_flags, "names": names,
 			"roles_heard": roles_heard,
-			"noted_flags": noted_flags, "noted_people": noted_people, "journal_surprise_done": journal_surprise_done}
+			"noted_flags": noted_flags, "noted_people": noted_people, "sources": sources,
+			"journal_surprise_done": journal_surprise_done, "seen_today": seen_today, "guide_done": guide_done}
 	return d.duplicate(true)   # copias: si después se resetea el diario, lo guardado no cambia
 
 
@@ -245,9 +297,12 @@ func from_dict(d: Dictionary) -> void:
 	roles_heard.assign(d.get("roles_heard", []))
 	noted_flags.assign(d.get("noted_flags", []))
 	noted_people = (d.get("noted_people", {}) as Dictionary).duplicate(true)
+	sources = (d.get("sources", {}) as Dictionary).duplicate(true)
 	journal_surprise_done = bool(d.get("journal_surprise_done", false))
+	guide_done.assign(d.get("guide_done", []))
 	visited.assign(d.get("visited", []))
 	seen_flags.assign(d.get("seen_flags", []))
+	seen_today.assign(d.get("seen_today", []))
 	sightings = {}
 	for npc: String in d.get("sightings", {}):
 		sightings[npc] = {}
@@ -278,7 +333,7 @@ func _note_zone(zone_id: String) -> void:
 func _on_minute_changed(_hour: int, _minute: int) -> void:
 	_note_zone(ZoneManager.current_zone)
 	var player: PlayerController = ZoneManager.player
-	if player == null or not has_journal():
+	if player == null:
 		return
 	var now: int = TimeManager.now_minutes()
 	for node in get_tree().get_nodes_in_group("npc_actors"):
@@ -289,7 +344,9 @@ func _on_minute_changed(_hour: int, _minute: int) -> void:
 		if offset.x > SIGHT_RANGE.x or offset.y > SIGHT_RANGE.y:
 			continue
 		var person_id: String = person_for_dialogue(actor.npc_id)
-		if person_id != "":
+		if person_id != "" and not person_id in seen_today:
+			seen_today.append(person_id)
+		if person_id != "" and has_journal():
 			_record_sighting(person_id, actor.zone, now)
 
 

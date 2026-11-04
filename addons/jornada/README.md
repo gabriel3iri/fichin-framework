@@ -29,7 +29,7 @@ vecinos y tres días en una panadería.
 
 | Qué | Dónde | Para qué |
 |---|---|---|
-| Reglas | `data/game.json` | escenas, inicio, jornada (`day`), roles de flags, intro, pensamientos, sospecha, trabajo, gente |
+| Reglas | `data/game.json` | escenas, inicio, jornada (`day`), roles de flags, intro, pensamientos, sospecha, trabajo, gente, `names_from_loop` (desde qué jornada se aprenden nombres) |
 | Lo que se puede saber | clase `KnowledgeRegistry` (`class_name`) | enum `Kind` (`WITNESS`, `TESTIMONY`, `DOCUMENT`, `PHYSICAL`, `HEARD`, `TRUST`, `DEDUCTION`, `STATE`, `NEGATIVE`), `FLAGS`, `is_valid(flag)`, `kind_of(flag)`; un flag que no esté no existe. `HEARD` (OÍDO) es obligatorio aunque el juego no lo use: el diario y los toasts del framework lo nombran |
 | Mundo | `data/world.json`, `data/zones.json`, `data/layouts/*.json` | tiles, estilos, objetos, zonas y su contenido (ver "Mundo") |
 | Gente | `data/schedules/<id>.json`, `data/dialogue/<id>.json` | horarios (hora de llegada, zona, celda) y conversaciones |
@@ -41,7 +41,7 @@ vecinos y tres días en una panadería.
 Mecánicas opcionales: si el archivo no existe, el juego no la usa y no hay error. `data/events.json` (eventos a hora
 fija), `work.json` (orden de trabajo y minijuegos), `audio.json`, `lighting.json`, `weather.json`, `witness.json`
 (lo que se anota por ver a alguien), `locks.json` (puertas con llave), `private_rooms.json`, `annoyance.json`,
-`barks.json` (frases sueltas y charlas), `energy.json` (energía del personaje: correr la gasta, la comida la llena, ver `core/stamina.gd`), `economy.json` (el dinero del día: viático al recibir la orden, pago por tarea y opciones de diálogo con `"cost"`, y con `"cant_afford"` la que aparece cuando no alcanza, ver `core/wallet.gd`), `relations.json` (quién sabe de quién y cómo lo cuenta al «preguntar por alguien»: grupos, profundidad, lazos, voces y condiciones; las frases van en el CSV con variantes por persona, por quien contesta, por voz y por tipo de lazo, ver `social/relations.gd` y `DialogueManager._about_line`), `speeches.json` (asientos en los objetos y alguien que le habla a la sala; escucharlo sentado da flags y lo trae a hablar, ver `social/speeches.gd`), `escort.json` (quien da un encargo lleva al jugador y lo espera, lo llama, lo busca o lo lleva si se atrasa, ver `social/escort_system.gd`), `game.json → notices` (carteles que frenan el juego al ganar un flag, ver `core/notices.gd`), `search.json` (alguien busca al jugador si va atrasado con el trabajo: llega solo adonde lo vio un testigo, ver `social/search_system.gd`), `inspectables.json` (objetos examinables), `buildings.json` (edificios
+`barks.json` (frases sueltas y charlas), `energy.json` (energía del personaje: correr la gasta, la comida la llena, ver `core/stamina.gd`), `economy.json` (el dinero del día: viático al recibir la orden, pago por tarea y opciones de diálogo con `"cost"`, y con `"cant_afford"` la que aparece cuando no alcanza, ver `core/wallet.gd`), `trust.json` (confianza de cada persona de −2 a 3, por jornada: la suben o bajan las opciones con `"trust"` y repetir preguntas; mantiene los flags `<persona>_trust_<n>` y se ve en una barra bajo el retrato, ver `social/trust.gd`), `relations.json` (quién sabe de quién y cómo lo cuenta al «preguntar por alguien»: grupos, profundidad, lazos, voces y condiciones; las frases van en el CSV con variantes por persona, por quien contesta, por voz y por tipo de lazo, ver `social/relations.gd` y `DialogueManager._about_line`), `speeches.json` (asientos en los objetos y alguien que le habla a la sala; escucharlo sentado da flags y lo trae a hablar, ver `social/speeches.gd`), `escort.json` (quien da un encargo lleva al jugador y lo espera, lo llama, lo busca o lo lleva si se atrasa, ver `social/escort_system.gd`), `game.json → notices` (carteles que frenan el juego al ganar un flag, ver `core/notices.gd`), `search.json` (alguien busca al jugador si va atrasado con el trabajo: llega solo adonde lo vio un testigo, ver `social/search_system.gd`), `inspectables.json` (objetos examinables), `buildings.json` (edificios
 dibujados enteros).
 
 ### Claves de texto que pone cada juego
@@ -67,7 +67,7 @@ Las de la UI genérica vienen en `translations/jornada.csv` y el juego no las re
   la siguiente). Señales `loop_started`, `knowledge_gained`, `game_reset`.
 - `SaveManager.register_section(clave, guardar, cargar)`: lo que el juego guarda en la partida.
 - `TimedEvents.register_sound_source(nombre, func)`: de dónde sale un sonido de `events.json` (`"source"`).
-- Horarios: `"stay_if"`, `"days"` y `"weekdays"`; eventos: `"days"` y `"weekdays"`.
+- Horarios: `"stay_if"` (no sale hacia ese punto con esos flags), `"skip_if"` (lo saltea y sigue al próximo, también si el flag llega en camino), `"days"` y `"weekdays"`; eventos: `"days"` y `"weekdays"`.
 - Diario: pestaña `"roster"` en `journal.json` (una lista que se desbloquea con un flag).
 - Horarios: `python3 addons/jornada/tools/schedule_table.py [--root <proyecto>] [--check]` escribe la tabla
   `docs/HORARIOS.md` desde `data/schedules/*.json` y revisa orden, zonas y choques de celda. Para traer a un NPC hasta

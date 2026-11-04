@@ -25,6 +25,10 @@ const BUBBLE_ADDRESS_BG: Color = Color(0.957, 0.902, 0.769, 0.88)
 ## Pensamiento del jugador: nube azulada, letra de tinta azul.
 const BUBBLE_THOUGHT_BG: Color = Color(0.835, 0.871, 0.937, 0.84)
 const BUBBLE_THOUGHT_TEXT: Color = Color(0.16, 0.2, 0.32)
+## Un nombre en un globo (se puede anotar con un clic) y en la caja de diálogo.
+const BUBBLE_NAME: Color = Color(0.58, 0.18, 0.12)
+const BUBBLE_NAME_HOVER: Color = Color(0.85, 0.32, 0.18)
+const DIALOGUE_NAME: Color = Color(1.0, 0.804, 0.612)
 
 static var _grabber: ImageTexture
 

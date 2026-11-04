@@ -52,6 +52,9 @@ func _on_knowledge_gained(flag: String) -> void:
 		return
 	if start.has("loop_max") and LoopManager.loop_number > int(start["loop_max"]):
 		return
+	# "unless": con alguno de estos flags ya no hace falta llevarlo (sabe el camino)
+	if (start.get("unless", []) as Array).any(func(f: String) -> bool: return LoopManager.has_knowledge(f)):
+		return
 	_pending = true
 	_waited = 0.0
 
@@ -63,7 +66,7 @@ func _try_start(delta: float) -> void:
 	var leader: NpcActor = _actor()
 	var from_zones: Array = _cfg.get("start", {}).get("from_zones", [])
 	if leader == null or leader.zone == ZoneManager.GONE or leader.zone == _destination_zone() \
-			or (not from_zones.is_empty() and not leader.zone in from_zones):
+			or (not from_zones.is_empty() and not (leader.zone in from_zones and ZoneManager.current_zone in from_zones)):
 		_pending = false   # no está, ya está en el destino o la orden la dio en otro lado: no hay nadie a quien seguir
 		return
 	if leader.is_talking() or leader.is_on_detour():

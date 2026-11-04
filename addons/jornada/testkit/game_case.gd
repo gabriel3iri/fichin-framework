@@ -26,11 +26,20 @@ func before_each() -> void:
 func after_each() -> void:
 	speed_up(1.0)
 	tree.paused = false
-	dm.set("is_active", false)
+	if dm.is_active:
+		dm.abort()
+	# Flags estáticos de UI: si un test los deja en true, TimeManager.start() se niega a correr.
+	Journal.is_open = false
+	WorkOrderPanel.is_open = false
+	var gm: Node = autoload("GameManager")
+	if gm.state == gm.State.PAUSED:
+		gm.resume_game()
+	else:
+		gm.sync_day_clock()
 
 
 ## Partida nueva hasta que la escena de juego está en pie; con `skip_intro` saca la tarjeta del principio.
-func start_game(skip_intro: bool = true) -> bool:
+func start_game(skip_intro: bool = true, skip_wake: bool = true) -> bool:
 	autoload("GameManager").new_game()
 	var ok: bool = await until(func() -> bool:
 		return tree.current_scene != null and tree.current_scene.name == "Main" and is_instance_valid(zm.player), 15.0)
@@ -41,6 +50,8 @@ func start_game(skip_intro: bool = true) -> bool:
 				card.queue_free()
 		tree.paused = false
 		await frames(1)
+	if skip_wake and is_instance_valid(zm.player):
+		zm.player.skip_wake_pause()
 	return assert_true(ok, "no arrancó la escena de juego")
 
 

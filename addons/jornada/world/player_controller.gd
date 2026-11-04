@@ -46,6 +46,7 @@ func _ready() -> void:
 	DialogueManager.dialogue_started.connect(_on_dialogue_started)
 	DialogueManager.dialogue_ended.connect(_on_dialogue_ended)
 	LoopManager.knowledge_gained.connect(_on_knowledge_gained)
+	WorkManager.task_completed.connect(_on_task_completed)
 	# Cada loop recarga la escena: el técnico que aparece a las 06:00 es el que despierta (el aviso de loop_started
 	# llega antes de recargar, al jugador anterior).
 	_wake_up.call_deferred()
@@ -55,6 +56,7 @@ func _exit_tree() -> void:
 	DialogueManager.dialogue_started.disconnect(_on_dialogue_started)
 	DialogueManager.dialogue_ended.disconnect(_on_dialogue_ended)
 	LoopManager.knowledge_gained.disconnect(_on_knowledge_gained)
+	WorkManager.task_completed.disconnect(_on_task_completed)
 
 
 ## Pensamiento sobre la cabeza, en un globo de pensamiento (nube azulada con burbujitas; ui/speech_bubbles.gd): orienta
@@ -71,14 +73,29 @@ func thought_text() -> String:
 
 ## Al despertar (data/game.json "thoughts"): una frase fija por jornada mientras dure "wake_first" y después una al
 ## azar de "wake_later" sin repetir la anterior. "journal_kept": la primera vez que se despierta con el diario lleno,
-## desde la jornada "journal_kept_from" (en un loop, la sorpresa de que la libreta no se borró).
+## desde la jornada "journal_kept_from" (en un loop, la sorpresa de que la libreta no se borró). Recién despierto se
+## queda quieto WAKE_PAUSE segundos y entonces piensa.
+const WAKE_PAUSE: float = 1.0
 var _last_wake: String = ""
+var _waking: bool = false
+
+
+## Corta la pausa del despertar (las pruebas arrancan moviéndose); el pensamiento sale igual.
+func skip_wake_pause() -> void:
+	if _waking:
+		_waking = false
+		can_move = true
 
 
 func _wake_up() -> void:
 	if TimeManager.now_minutes() > GameConfig.day_start() + 2:
 		return   # cargó una partida a mitad del día: no se despierta
-	await get_tree().create_timer(1.6, false).timeout
+	_waking = true
+	can_move = false
+	await get_tree().create_timer(WAKE_PAUSE, false).timeout
+	if _waking:
+		_waking = false
+		can_move = true
 	if LoopManager.next_wake_thought != "":
 		think(tr(LoopManager.next_wake_thought), 5.5)
 		LoopManager.next_wake_thought = ""
@@ -111,12 +128,37 @@ func _on_knowledge_gained(flag: String) -> void:
 		think(tr(work_thought), 4.5)
 
 
+## Al terminar bien una tarea de trabajo (data/game.json "thoughts"): una frase al azar de "task_done_first" la primera
+## vez que termina esa tarea y de "task_done_later" las siguientes (cuenta las veces, no las jornadas), sin repetir la
+## anterior. Sale TASK_THOUGHT_DELAY segundos
+## después (no encima del aviso de tarea hecha) y, si hay una charla abierta, cuando termina.
+const TASK_THOUGHT_DELAY: float = 1.2
+var _last_task_thought: String = ""
+
+
+func _on_task_completed(task_id: String) -> void:
+	var thoughts: Dictionary = GameConfig.value("thoughts", {})
+	var lines: Array = thoughts.get("task_done_first" if WorkManager.times_done(task_id) <= 1 else "task_done_later", [])
+	if lines.is_empty():
+		return
+	var options: Array = lines.filter(func(k: String) -> bool: return k != _last_task_thought)
+	var key: String = options.pick_random() if not options.is_empty() else lines[0]
+	_last_task_thought = key
+	await get_tree().create_timer(TASK_THOUGHT_DELAY, false).timeout
+	while DialogueManager.is_active:
+		await DialogueManager.dialogue_ended
+	if is_inside_tree():
+		think(tr(key), 4.5)
+
+
 ## E: avanza el diálogo activo o interactúa con el objeto cercano.
 func _unhandled_input(event: InputEvent) -> void:
-	if not event.is_action_pressed("interact"):
-		return
+	if not event.is_action_pressed("interact") or _waking:
+		return   # recién despierto no toca nada todavía
 	if DialogueManager.is_active:
 		DialogueManager.advance()  # no hace nada si hay opciones: se eligen con 1-9
+	elif is_instance_valid(_interactable) and ChatterSystem.intercept():
+		pass   # primero habla quien tenía que hablar (Klara golpea antes de que agarre el diario)
 	elif is_instance_valid(_interactable):
 		_interactable.interact()
 	elif seated and is_instance_valid(seat) and seat.has_method("call_service"):
@@ -234,6 +276,7 @@ func _physics_process(delta: float) -> void:
 			stand()
 		else:
 			Stamina.step(delta, false, false)   # sentado descansa
+			_update_interactable()   # sentado a una mesa se le habla al de al lado
 			return
 	_update_interactable()
 	var input_dir: Vector2 = Vector2.ZERO

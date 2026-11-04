@@ -69,7 +69,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _can_open() -> bool:
 	return GameManager.state == GameManager.State.PLAYING and not DialogueManager.is_active \
-			and WorkManager.active_task == "" and not WorkOrderPanel.is_open
+			and WorkManager.active_task == "" and not WorkOrderPanel.is_open and not Journal.is_open
 
 
 func open() -> void:
