@@ -1,12 +1,18 @@
 class_name NpcActor
 extends StaticBody2D
-## NPC interactuable que sigue su horario (data/schedules/<npc_id>.json, canon 02).
+## NPC interactuable que sigue su horario (data/schedules/<npc_id>.json).
 ## Origen del nodo = pies. Camina en línea recta entre puntos; al cambiar de zona sale por la
 ## puerta y reaparece en la otra. Solo existe para el jugador si está en su misma zona.
 ## El diálogo sale de data/dialogue/<npc_id>.json.
 
 ## Un poco más lento que el jugador (80 px/s): los vecinos caminan sin apuro.
+const Daily := preload("res://addons/jornada/core/daily.gd")
 const WALK_SPEED: float = 70.0
+## Lo más que recupera de una vez quien quedó atrás del reloj (segundos de juego): un cuadro lento, aun muy acelerado.
+## Los saltos del reloj (TimeManager.jumps) no se recuperan nunca.
+const MAX_CATCH_UP: float = 10.0
+## Lo más que avanza por vez dentro de un cuadro (px): entre uno y otro mira si se le cruza el jugador.
+const MAX_SUBSTEP: float = 4.0
 ## Nunca empuja al jugador: se detiene a esta distancia de sus pies (x, y en px), espera y luego lo rodea.
 const PLAYER_GAP: Vector2 = Vector2(13.0, 9.0)
 const WAIT_BEFORE_SIDESTEP: float = 0.9
@@ -16,7 +22,7 @@ const SIDESTEPS_BEFORE_PASSING: int = 3
 ## Al aparecer por una puerta o un borde espera a que no haya nadie encima (hasta MAX_ARRIVAL_WAIT s).
 const ARRIVAL_CLEARANCE: Vector2 = Vector2(18.0, 12.0)
 const MAX_ARRIVAL_WAIT: float = 5.0
-## Minutos de juego de retraso tolerados antes de que el NPC aparezca en su sitio (los eventos del canon son fijos).
+## Minutos de juego de retraso tolerados antes de que el NPC aparezca en su sitio (los eventos del día son fijos).
 const LATE_GRACE: int = 3
 ## Minutos de juego que, después de perderlo de vista, todavía cuenta como visto: quien lo sigue por una puerta no lo ve
 ## esfumarse del otro lado.
@@ -31,14 +37,14 @@ const NAME_TAG_ROW: float = 14.0
 const FACES: Dictionary = {"up": Vector2.UP, "down": Vector2.DOWN, "left": Vector2.LEFT, "right": Vector2.RIGHT}
 ## Sentado (un punto del horario con "sit": true, sobre un banco o una banqueta): cuadro de sentado (CharacterFrames) y
 ## el dibujo sube hasta el asiento.
-const SIT_LIFT: float = -4.0
+const SIT_LIFT: float = -1.0
 ## Lo que está haciendo (un punto del horario con "doing"): cada tanto agacha la cabeza sobre el trabajo, y con "item" se ve
 ## el objeto (un PNG de los props: los planos en la mesa) en "item_at" px desde los pies.
 const WORK_NOD_EVERY: Vector2 = Vector2(1.6, 3.4)
 const WORK_NOD_SECONDS: float = 0.35
 ## Con "roam" (celdas [x, y] o [x, y, "up"]) el punto es un recorrido: cada tanto camina a otra de esas celdas (la
 ## limpiadora va de mueble en mueble con el plumero).
-const ROAM_EVERY: Vector2 = Vector2(5.0, 10.0)
+const ROAM_EVERY: Vector2 = Vector2(5.0, 10.0)   # minutos de juego
 
 @export var npc_id: String = ""
 @export var sheet: Texture2D
@@ -75,7 +81,12 @@ var _doing: String = ""
 var _item: Sprite2D
 var _nod_in: float = 0.0
 var _nodding: float = 0.0
-var _roam_in: float = 0.0
+var _roam_at: float = -1.0       # el último minuto de juego en que miró qué celda del recorrido le toca
+var _roam_spot: Vector2i = Vector2i(-1, -1)   # la última celda del recorrido que eligió
+var _roam_entry: int = -1                      # de qué punto del horario (su minuto)
+var _walk_clock: float = -1.0     # hasta qué minuto del reloj ya caminó (-1: quieto)
+var _walk_jumps: int = 0          # TimeManager.jumps que ya vio (un salto del reloj no se camina de golpe)
+var _walk_from: float = -1.0      # el minuto en que sale el camino recién planeado (su hora, no el cuadro en que se vio)
 var _roam_face: String = ""      # hacia dónde mira en la celda del recorrido a la que fue ("" en el punto mismo)
 static var _props_dir: String = ""
 
@@ -136,52 +147,93 @@ func _physics_process(delta: float) -> void:
 			_set_name_text(_display_name())   # cambia apenas aprende el nombre
 	# Mientras habla con el jugador se queda quieto: el horario se retoma al terminar.
 	if _talking or _held or _route.is_empty():
+		_walk_clock = -1.0
+		if _route.is_empty():
+			_walk_from = -1.0
 		CharacterFrames.apply(_sprite, _facing, 0.0, false, _sitting)
 		return
-	var step: Dictionary = _route[0]
-	if step.get("instant", false):
-		# Si va a aparecer encima del jugador (una puerta, un borde), espera a que se despeje: nunca lo empuja.
-		if step.has("pos") and _player_near(step["pos"], ARRIVAL_CLEARANCE) and _blocked_for < MAX_ARRIVAL_WAIT:
+	# Lo que camina sale del reloj del juego, no del cuadro (TimeManager.world): con el reloj frenado por una charla o el
+	# diario nadie avanza, y a la misma hora cada uno está en el mismo punto de su camino aunque los cuadros duren
+	# distinto (día de la marmota).
+	# Con el reloj parado por otra cosa (el final del día, una prueba), en tiempo real.
+	var budget: float = 0.0
+	match TimeManager.world():
+		TimeManager.World.CLOCK:
+			# Un salto del reloj (una tarea, la G, una prueba) no se recupera de golpe: sigue caminando desde donde está
+			# (si no, saltaría a la vista). Lo normal entre cuadros, aunque uno tarde, sí.
+			if _walk_jumps != TimeManager.jumps:
+				_walk_jumps = TimeManager.jumps
+				if _walk_clock >= 0.0:
+					_walk_clock = TimeManager.minutes
+			if _walk_clock < 0.0:
+				var from_ok: bool = _walk_from >= 0.0 and TimeManager.seconds_since(_walk_from) <= MAX_CATCH_UP
+				_walk_clock = _walk_from if from_ok else TimeManager.minutes
+				_walk_from = -1.0
+			budget = minf(TimeManager.seconds_since(_walk_clock), MAX_CATCH_UP) * WALK_SPEED
+			_walk_clock = maxf(_walk_clock, TimeManager.minutes)
+		TimeManager.World.FREE:
+			budget = WALK_SPEED * delta
+			_walk_clock = -1.0
+			_walk_from = -1.0
+	var moved_total: float = 0.0
+	while not _route.is_empty():
+		var step: Dictionary = _route[0]
+		if step.get("instant", false):
+			# Si va a aparecer encima del jugador (una puerta, un borde), espera a que se despeje: nunca lo empuja.
+			if step.has("pos") and _player_near(step["pos"], ARRIVAL_CLEARANCE) and _blocked_for < MAX_ARRIVAL_WAIT:
+				_blocked_for += delta
+				return
+			_blocked_for = 0.0
+			zone = step["zone"]
+			if step.has("pos"):
+				position = step["pos"]
+				reset_physics_interpolation()
+			_route.pop_front()
+			_refresh_presence()
+			if step.has("pos") and budget > 0.0:
+				# Aparece en la puerta o el borde y ahí se lo ve este cuadro: lo que le sobraba lo camina en el próximo.
+				if _walk_clock >= 0.0:
+					_walk_clock -= budget / WALK_SPEED * maxf(TimeManager.time_scale, 0.001)
+				break
+			continue
+		if budget <= 0.001:
+			break
+		var target: Vector2 = step["pos"]
+		var next: Vector2 = position.move_toward(target, minf(budget, MAX_SUBSTEP))   # de a poco: no pasa a través del jugador
+		# El jugador manda: si el paso lo metería en el jugador, se detiene (no lo empuja) y, si el paso sigue cerrado, lo rodea.
+		if _player_near(next, PLAYER_GAP) and _gets_closer_to_player(next) and _sidesteps < SIDESTEPS_BEFORE_PASSING:
 			_blocked_for += delta
+			_facing = ZoneManager.player.global_position - position
+			CharacterFrames.apply(_sprite, _facing, 0.0, false, _sitting)
+			if _blocked_for >= WAIT_BEFORE_SIDESTEP and not _block_reported:
+				_block_reported = true
+				AnnoyanceSystem.bump(npc_id, "blocked")   # cerrarle el paso lo fastidia
+			if _blocked_for >= WAIT_BEFORE_SIDESTEP:
+				_sidestep(target)
+				_blocked_for = 0.0
+				if _sidesteps >= SIDESTEPS_BEFORE_PASSING:
+					show_bark(tr("bark_excuse_me"), UiStyle.TEXT, 1.6)   # no hay forma de rodearlo: pasa
 			return
 		_blocked_for = 0.0
-		zone = step["zone"]
-		if step.has("pos"):
-			position = step["pos"]
-			reset_physics_interpolation()
-		_route.pop_front()
-		_refresh_presence()
-		return
-	var target: Vector2 = step["pos"]
-	var next: Vector2 = position.move_toward(target, WALK_SPEED * delta)
-	# El jugador manda: si el paso lo metería en el jugador, se detiene (no lo empuja) y, si el paso sigue cerrado, lo rodea.
-	if _player_near(next, PLAYER_GAP) and _gets_closer_to_player(next) and _sidesteps < SIDESTEPS_BEFORE_PASSING:
-		_blocked_for += delta
-		_facing = ZoneManager.player.global_position - position
-		CharacterFrames.apply(_sprite, _facing, 0.0, false, _sitting)
-		if _blocked_for >= WAIT_BEFORE_SIDESTEP and not _block_reported:
-			_block_reported = true
-			AnnoyanceSystem.bump(npc_id, "blocked")   # cerrarle el paso lo fastidia
-		if _blocked_for >= WAIT_BEFORE_SIDESTEP:
-			_sidestep(target)
-			_blocked_for = 0.0
-			if _sidesteps >= SIDESTEPS_BEFORE_PASSING:
-				show_bark(tr("bark_excuse_me"), UiStyle.TEXT, 1.6)   # no hay forma de rodearlo: pasa
-		return
-	_blocked_for = 0.0
-	_block_reported = false
-	var before: Vector2 = position
-	position = next
-	var moved: Vector2 = position - before
-	if moved != Vector2.ZERO:
-		_facing = moved
-	CharacterFrames.apply(_sprite, _facing, moved.length() / delta)
-	if position.is_equal_approx(target):
-		if not step.get("aside", false):
-			_sidesteps = 0   # avanzó en su camino
-		_route.pop_front()
-		if _route.is_empty():
-			_facing = _arrival_facing()  # al llegar queda de frente, o hacia donde diga el horario ("face")
+		_block_reported = false
+		var moved: Vector2 = next - position
+		if moved == Vector2.ZERO and not next.is_equal_approx(target):
+			break   # lo que queda es menos de lo que cambia un Vector2 en esta posición: el resto, en el próximo cuadro
+		position = next
+		budget -= moved.length()
+		moved_total += moved.length()
+		if moved != Vector2.ZERO:
+			_facing = moved
+		if position.is_equal_approx(target):
+			if not step.get("aside", false):
+				_sidesteps = 0   # avanzó en su camino
+			_route.pop_front()
+			if _route.is_empty():
+				_facing = _arrival_facing()  # al llegar queda de frente, o hacia donde diga el horario ("face")
+				_vanish_if_due()
+	# El reloj avanza una vez por cuadro y la física puede dar varios pasos: camina (de animación) mientras el reloj corre,
+	# aunque en este paso no le haya tocado avanzar.
+	CharacterFrames.apply(_sprite, _facing, WALK_SPEED if moved_total > 0.0 or (TimeManager.world() == TimeManager.World.CLOCK and not _route.is_empty()) else 0.0)
 
 
 ## ¿Este paso acerca al NPC al jugador? (Si ya está pegado y se aleja, puede seguir.)
@@ -299,6 +351,17 @@ func doing() -> String:
 	return _doing
 
 
+## Lo que su horario dice que hace a esta hora en la zona donde está (llegado o no): para elegir qué dice al pasar sin
+## depender del cuadro exacto en que llegó (día de la marmota). Lo que se ve (agachar la cabeza, el objeto) sigue a doing().
+func scheduled_doing() -> String:
+	if _talking or _detour or _entry_index < 0 or _entry_index >= _entries.size():
+		return ""
+	var entry: Dictionary = _entries[_entry_index]
+	if entry["zone"] != zone or TimeManager.now_minutes() < int(entry["minutes"]):
+		return ""
+	return str(entry.get("doing", ""))
+
+
 func _update_activity(delta: float) -> void:
 	var entry: Dictionary = _arrived_entry()
 	var now: String = "" if _talking else str(entry.get("doing", ""))
@@ -332,25 +395,55 @@ func _update_activity(delta: float) -> void:
 			_item.flip_h = not _item.flip_h   # da vuelta la hoja
 
 
-## Recorrido ("roam"): llegó a una celda y, pasado un rato, sigue a otra (nunca a la que ocupa otro).
-func _update_roam(delta: float, entry: Dictionary) -> void:
+## Recorrido ("roam"): cada tanto camina a otra de sus celdas (nunca a la que ocupa otro: espera a que se libere). El
+## rato se cuenta en minutos de juego y la celda que toca sale solo de la hora y del minuto en que empieza el punto del
+## horario, no de cuándo llegó ni de dónde quedó: con el reloj parado (una charla, el diario) nadie cambia de celda, y a
+## la misma hora cada uno está en el mismo lugar cada jornada aunque un día llegue un minuto más tarde.
+func _update_roam(_delta: float, entry: Dictionary) -> void:
 	var spots: Array = entry.get("roam", [])
 	if spots.is_empty() or _talking or _held:
 		return
-	_roam_in -= delta
-	if _roam_in > 0.0:
+	var now: int = int(TimeManager.minutes)
+	if _roam_entry != int(entry["minutes"]):   # punto nuevo del horario: arranca desde su celda
+		_roam_entry = int(entry["minutes"])
+		_roam_spot = Vector2i(-1, -1)
+		_roam_at = -1.0
+	elif int(_roam_at) == now:
+		return   # ya se miró en este minuto
+	_roam_at = now
+	var pick: Array = _roam_pick(entry, now)
+	if pick.is_empty():
+		return   # todavía no toca moverse de su celda
+	var home: Vector2i = entry["tile"]
+	var cell := Vector2i(int(pick[0]), int(pick[1]))
+	if cell == (_roam_spot if _roam_spot != Vector2i(-1, -1) else home) or _taken_by_other(ZoneManager.tile_px(cell)):
 		return
-	_roam_in = randf_range(ROAM_EVERY.x, ROAM_EVERY.y)
-	var options: Array = [[entry["tile"].x, entry["tile"].y, entry.get("face", "down"), true]]
-	options.append_array(spots)
-	options = options.filter(func(o: Array) -> bool:
-		var px: Vector2 = ZoneManager.tile_px(Vector2i(int(o[0]), int(o[1])))
-		return not px.is_equal_approx(position) and not _taken_by_other(px))
-	if options.is_empty():
-		return
-	var pick: Array = options.pick_random()
+	_roam_spot = cell
 	_roam_face = "" if pick.size() > 3 else (str(pick[2]) if pick.size() > 2 else "down")
-	_append_path(zone, position, ZoneManager.tile_px(Vector2i(int(pick[0]), int(pick[1]))))
+	if _route.is_empty():
+		_walk_from = float(now)   # la celda nueva toca en este minuto: camina desde ahí
+	_append_path(zone, position, ZoneManager.tile_px(_roam_spot))
+
+
+## La celda del recorrido que toca a la hora `now` ([x, y, cara] o la propia celda con un cuarto elemento), o [] si
+## todavía no toca moverse. Los cambios van cada ROAM_EVERY minutos desde el comienzo del punto del horario, y cada
+## uno elige (con Daily) una celda distinta de la anterior: la misma cadena cada jornada.
+func _roam_pick(entry: Dictionary, now: int) -> Array:
+	var home: Vector2i = entry["tile"]
+	var options: Array = [[home.x, home.y, entry.get("face", "down"), true]]
+	options.append_array(entry.get("roam", []))
+	var pick: Array = []
+	var last: Vector2i = home
+	var t: int = int(entry["minutes"])
+	while true:
+		t += maxi(1, int(roundf(Daily.range_f(ROAM_EVERY.x, ROAM_EVERY.y, "%s@%d" % [npc_id, t]))))
+		if t > now:
+			break
+		var from: Vector2i = last
+		var others: Array = options.filter(func(o: Array) -> bool: return Vector2i(int(o[0]), int(o[1])) != from)
+		pick = Daily.pick(others, "%s/roam@%d" % [npc_id, t])
+		last = Vector2i(int(pick[0]), int(pick[1]))
+	return pick
 
 
 func _taken_by_other(px: Vector2) -> bool:
@@ -411,7 +504,10 @@ func _on_dialogue_ended(ended_id: String) -> void:
 
 
 func _load_schedule() -> void:
-	var path: String = "res://data/schedules/%s.json" % npc_id
+	var path: String = LoopManager.data_file("schedules", npc_id, "res://data/schedules/%s.json" % npc_id)
+	if path == "":
+		zone = ZoneManager.GONE   # jornada especial sin esta persona: hoy no está
+		return
 	if not FileAccess.file_exists(path):
 		push_warning("NpcActor %s: sin horario (%s)" % [npc_id, path])
 		return
@@ -441,11 +537,12 @@ func _load_schedule() -> void:
 			"item": str(raw.get("item", "")),
 			"item_at": raw.get("item_at", [0, -12]),
 			"roam": raw.get("roam", []),
+			"vanish": raw.get("vanish", false),
 		})
 	_compute_departures()
 
 
-## La hora de cada punto del horario es la de LLEGADA (canon 02: "12:15 Brandt come en la Zur Pinie").
+## La hora de cada punto del horario es la de LLEGADA ("12:15 come en la taberna").
 ## Cada NPC sale antes, según el largo real del camino desde el punto anterior.
 func _compute_departures() -> void:
 	for i in range(1, _entries.size()):
@@ -473,7 +570,7 @@ func _entry_at(now: int, key: String = "minutes") -> int:
 	return idx
 
 
-## "skip_if": con alguno de esos flags, el punto no va (Klara no sube a golpear si ya dio la orden): sigue al próximo.
+## "skip_if": con alguno de esos flags, el punto no va (no sube a golpear si ya dio la orden): sigue al próximo.
 func _skipped(entry: Dictionary) -> bool:
 	return (entry.get("skip_if", []) as Array).any(func(f: String) -> bool: return LoopManager.has_knowledge(f))
 
@@ -511,6 +608,17 @@ func _place_at(entry: Dictionary) -> void:
 	position = ZoneManager.tile_px(entry["tile"])
 	reset_physics_interpolation()   # aparece de golpe: que no se dibuje deslizándose desde donde estaba
 	_route.clear()
+	_walk_from = -1.0   # la hora de salida anotada era de otro camino
+	_vanish_if_due()
+
+
+## Un punto con "vanish": true es un lugar por donde se va sin salir de la zona (una trampilla, la boca de un pozo): al
+## llegar ahí desaparece, como quien cruza una puerta.
+func _vanish_if_due() -> void:
+	if _entry_index < 0 or _entry_index >= _entries.size() or not _entries[_entry_index].get("vanish", false):
+		return
+	zone = ZoneManager.GONE
+	_refresh_presence()
 
 
 ## Viene hasta el jugador como llega cualquiera (un arresto, un aviso urgente): si está en otra zona, entra por la
@@ -524,6 +632,7 @@ func approach_player() -> void:
 	_held = false
 	_scene_lock = true   # viene a hablarle: nadie la aborda en el camino
 	_route.clear()
+	_walk_from = -1.0   # la hora de salida anotada era de otro camino
 	_blocked_for = 0.0
 	if zone != ZoneManager.current_zone:
 		var door: Vector2 = _entrance_px(ZoneManager.current_zone, player.global_position)
@@ -539,15 +648,17 @@ func _on_minute_changed(_hour: int, _minute: int) -> void:
 	var idx: int = _entry_at(TimeManager.now_minutes(), "depart")
 	if idx != _entry_index:
 		_entry_index = idx
-		# "stay_if": no sale hacia este punto si se cumple alguno de esos flags (en Rabenholz, quien sube al 409 se
-		# queda esperando en el andén si el tren no sale).
+		# "stay_if": no sale hacia este punto si se cumple alguno de esos flags (quien iba a subir
+		# a un tren se queda esperando en el andén si el tren no sale).
 		if (_entries[idx].get("stay_if", []) as Array).any(func(f: String) -> bool: return LoopManager.has_knowledge(f)):
 			return
 		_plan_route(_target(idx))
+		if _walk_clock < 0.0 and not TimeManager.jumping:
+			_walk_from = float(_entries[idx]["depart"])   # sale a su hora: a la misma hora, en el mismo punto del camino
 		return
 	# El jugador puede entretenerlo, pero no desordenar el día: pasados LATE_GRACE minutos de su hora aparece en su sitio.
 	# Solo si el jugador no lo ve (ni donde está ni adonde va) ni lo vio hace un rato: si no, se esfumaría delante suyo
-	# (Baum después de una charla en el Rathaus; Maurer saliendo del telégrafo con el técnico detrás). A la vista, llega
+	# (después de una charla, o saliendo de un cuarto con el jugador detrás). A la vista, llega
 	# caminando aunque llegue tarde.
 	var entry: Dictionary = _target(idx)
 	var now: int = TimeManager.now_minutes()
@@ -583,6 +694,7 @@ func begin_detour(zone_id: String, px: Vector2) -> void:
 	_held = false
 	_scene_lock = false
 	_route.clear()
+	_walk_from = -1.0   # la hora de salida anotada era de otro camino
 	_blocked_for = 0.0
 	_plan_route({"zone": zone_id, "tile": ZoneManager.cell_of(px), "via": [] as Array[Vector2i]})
 
@@ -592,6 +704,7 @@ func retarget_detour(px: Vector2) -> void:
 	if not _detour:
 		return
 	_route.clear()
+	_walk_from = -1.0   # la hora de salida anotada era de otro camino
 	_append_path(zone, position, px)
 
 
@@ -620,6 +733,7 @@ func end_detour_in_place() -> void:
 	_held = false
 	_scene_lock = false
 	_route.clear()
+	_walk_from = -1.0   # la hora de salida anotada era de otro camino
 	if not _entries.is_empty():
 		_entry_index = _entry_at(TimeManager.now_minutes(), "depart")
 
@@ -639,6 +753,7 @@ func warp(zone_id: String, px: Vector2) -> void:
 	position = px
 	reset_physics_interpolation()
 	_route.clear()
+	_walk_from = -1.0   # la hora de salida anotada era de otro camino
 	_held = false
 	_refresh_presence()
 
@@ -648,7 +763,7 @@ func is_idle() -> bool:
 	return _route.is_empty()
 
 
-## Abandona el horario y va a `zone_id`/`tile` (p. ej. Helene vuelve a la consulta cuando decide no subir).
+## Abandona el horario y va a `zone_id`/`tile` (p. ej. vuelve a su trabajo cuando decide no viajar).
 func redirect(zone_id: String, tile: Vector2i) -> void:
 	var now: int = TimeManager.now_minutes()
 	_entries = [{"minutes": now, "depart": now, "boards": false, "no_snap": true, "zone": zone_id, "tile": tile, "via": [] as Array[Vector2i]}]
@@ -658,6 +773,7 @@ func redirect(zone_id: String, tile: Vector2i) -> void:
 
 func _plan_route(entry: Dictionary) -> void:
 	_route.clear()
+	_walk_from = -1.0   # la hora de salida anotada era de otro camino
 	_sidesteps = 0
 	var dest_zone: String = entry["zone"]
 	if dest_zone == ZoneManager.GONE and entry.get("boards", false):
@@ -835,7 +951,7 @@ func display_name() -> String:
 func _display_name() -> String:
 	var who: String = JournalManager.person_for_dialogue(npc_id)
 	if who != "":
-		return Identification.shown_name(who)   # "El del abrigo gris" hasta que sepa cómo se llama; «Erna?» si lo supone
+		return Identification.shown_name(who)   # "El del abrigo gris" hasta que sepa cómo se llama; «Marta?» si lo supone
 	for key: String in ["chr_" + npc_id, "pax_" + npc_id]:
 		var text: String = tr(key)
 		if text != key:

@@ -101,6 +101,17 @@ func flag(role: String) -> String:
 	return value("flags." + role, "")
 
 
+## ¿Ya rige algo que se habilita «desde la jornada N» o «con un flag»? `rule` es el valor del dato: un número (la
+## jornada desde la que rige) o un texto (un rol de `flags` o un flag: rige cuando el jugador lo tiene). Así un juego
+## de bucle decide por lo que hizo el jugador y no por el número de día (tener el diario, p. ej.).
+func unlocked(rule: Variant, default_loop: int = 1) -> bool:
+	if rule is String and rule != "":
+		var role_flag: String = flag(rule)
+		return LoopManager.has_knowledge(role_flag if role_flag != "" else rule)
+	var from: int = int(rule) if rule != null and not (rule is String) else default_loop
+	return LoopManager.loop_number >= from
+
+
 ## Flags que sobreviven al reinicio de la jornada aunque su tipo se reinicie (confianza, estado, negativos).
 func persistent_flags() -> Array:
 	return value("persistent_flags", [])

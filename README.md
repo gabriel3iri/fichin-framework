@@ -5,8 +5,9 @@ alrededor de un día: reloj, gente con horarios, conversaciones con condiciones,
 la jornada termina (vuelve el mismo día o pasa al siguiente).
 
 - `addons/jornada/`: el framework. Su documentación está en [`addons/jornada/README.md`](addons/jornada/README.md).
-- `examples/primer_dia/`: juego de ejemplo chico (dos zonas, tres vecinos, tres días). Enlaza el addon con un
-  symlink y corre sus pruebas con `./run_tests.sh`.
+- `examples/primer_dia/`: juego de ejemplo chico (dos zonas, tres vecinos, tres días y una feria como jornada
+  especial). Enlaza el addon con un symlink y corre sus pruebas con `./run_tests.sh` (Godot 4.7 en el `PATH` como
+  `godot`; la primera vez, `godot --headless --path examples/primer_dia --import`).
 
 ## Usarlo en un juego
 

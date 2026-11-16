@@ -1,7 +1,7 @@
 class_name DataValidator
 extends RefCounted
 ## Valida al arrancar (solo debug) que los diálogos usen flags del registro y keys del CSV.
-## Canon 04 §3: un flag mal escrito debe romper en el editor, no en producción.
+## Un flag mal escrito debe romper en el editor, no en producción.
 
 const DIALOGUE_DIR: String = "res://data/dialogue/"
 const CSV_PATH: String = "res://assets/translations/game.csv"
@@ -19,9 +19,12 @@ static func validate_all() -> int:
 		if file_name.ends_with(".json"):
 			errors += _validate_file(DIALOGUE_DIR + file_name, csv_keys)
 	errors += _validate_schedules()
+	errors += _validate_special_days(csv_keys)
+	errors += _validate_work(csv_keys)
 	errors += _validate_journal(csv_keys)
 	errors += _validate_inspectables()
 	errors += _validate_locks(csv_keys)
+	errors += _validate_gates()
 	errors += _validate_private_rooms()
 	errors += _validate_game_config()
 	errors += _validate_annoyance(csv_keys)
@@ -58,6 +61,8 @@ static func _validate_file(path: String, csv_keys: Dictionary) -> int:
 		errors += _check_key(entry.get("text_key", ""), csv_keys, where)
 		if entry.has("sd_key"):
 			errors += _check_key(entry["sd_key"], csv_keys, where)
+		if entry.has("speaker_key"):
+			errors += _check_key(entry["speaker_key"], csv_keys, where)
 		errors += _check_flags(entry.get("reveals", []), where)
 		errors += _check_no_deductions(entry.get("reveals", []), where)
 		errors += _check_effects(entry.get("effects", []), where)
@@ -81,6 +86,28 @@ static func _validate_file(path: String, csv_keys: Dictionary) -> int:
 				if JournalManager.person_for_dialogue(npc_id) == "":
 					push_error("%s: %s '%s' no es una persona del diario" % [where, field, npc_id])
 					errors += 1
+		for field: String in ["absent", "watched_by", "unwatched_by"]:
+			var npcs: Array = cond.get(field, []).duplicate()
+			for opt: Dictionary in entry.get("options", []):
+				npcs.append_array(opt.get(field, []))
+			for npc_id: String in npcs:
+				if not _has_schedule(npc_id):
+					push_error("%s: %s '%s' no tiene horario" % [where, field, npc_id])
+					errors += 1
+		var places: Array = cond.get("visited", []).duplicate()
+		for opt: Dictionary in entry.get("options", []):
+			places.append_array(opt.get("visited", []))
+		for zone_id: String in places:
+			if not ZoneManager.has_zone(zone_id):
+				push_error("%s: visited '%s' no es una zona" % [where, zone_id])
+				errors += 1
+		var cards: Array = cond.get("identified", []).duplicate()
+		for opt: Dictionary in entry.get("options", []):
+			cards.append_array(opt.get("identified", []))
+		for card_id: String in cards:
+			if Identification.card(card_id).is_empty():
+				push_error("%s: identified '%s' no es una ficha de Identification" % [where, card_id])
+				errors += 1
 		for list_name in CONDITION_FLAG_LISTS:
 			errors += _check_flags(cond.get(list_name, []), where)
 		for zone_id: String in cond.get("zones", []):
@@ -116,7 +143,7 @@ static func _check_effects(effects: Array, where: String) -> int:
 	return errors
 
 
-## Canon 04: las deducciones las concede DeductionSystem, nunca un diálogo.
+## Las deducciones las concede DeductionSystem, nunca un diálogo.
 static func _check_no_deductions(flags: Array, where: String) -> int:
 	var errors: int = 0
 	for flag: String in flags:
@@ -126,7 +153,7 @@ static func _check_no_deductions(flags: Array, where: String) -> int:
 	return errors
 
 
-## Diario (canon 10 §7): todo flag con entrada tiene `flag_*` y `desc_*`; las deducciones, `ded_*`;
+## Diario: todo flag con entrada tiene `flag_*` y `desc_*`; las deducciones, `ded_*`;
 ## y los datos de data/journal.json apuntan a flags, zonas y keys que existen.
 static func _validate_journal(csv_keys: Dictionary) -> int:
 	var errors: int = 0
@@ -158,8 +185,35 @@ static func _validate_journal(csv_keys: Dictionary) -> int:
 	for entry: Dictionary in roster.get("entries", []):
 		errors += _check_key(entry["name_key"], csv_keys, "lista del diario")
 		errors += _check_key(entry["role_key"], csv_keys, "lista del diario")
+	errors += _validate_questions(parsed.get("questions", []), csv_keys)
 	for zone_id: String in ZoneManager.zone_ids():
 		errors += _check_key("zone_" + zone_id, csv_keys, "zona")
+	return errors
+
+
+## data/journal.json "questions": id único, el texto en el CSV (y la pista y la respuesta si las tiene) y flags reales
+## en `opens` (con qué se abre: sin ninguno no aparece nunca) y `answered_by`.
+static func _validate_questions(questions: Array, csv_keys: Dictionary) -> int:
+	var errors: int = 0
+	var seen: Dictionary = {}
+	for question: Variant in questions:
+		if not question is Dictionary or str(question.get("id", "")) == "":
+			push_error("data/journal.json questions: una pregunta sin id (%s)" % [question])
+			errors += 1
+			continue
+		var where: String = "pregunta " + str(question["id"])
+		if seen.has(question["id"]):
+			push_error("%s: id repetido" % where)
+			errors += 1
+		seen[question["id"]] = true
+		errors += _check_key(str(question.get("text_key", "")), csv_keys, where)
+		for key: String in ["hint_key", "answer_key"]:
+			if question.has(key):
+				errors += _check_key(str(question[key]), csv_keys, where)
+		if (question.get("opens", []) as Array).is_empty():
+			push_error("%s: no tiene `opens` (no se abriría nunca)" % where)
+			errors += 1
+		errors += _check_flags(question.get("opens", []) + question.get("answered_by", []), where)
 	return errors
 
 
@@ -255,9 +309,25 @@ static func _validate_game_config() -> int:
 	var guide: Dictionary = GameConfig.value("journal.guide", {})
 	for step: String in guide:
 		if guide[step] is Dictionary:
-			for field: String in ["tip", "think"]:
-				if guide[step].has(field):
-					text_keys.append(guide[step][field])
+			if guide[step].has("think"):
+				text_keys.append(guide[step]["think"])
+			for s: Variant in guide[step].get("steps", []):
+				if s is Dictionary and s.has("tip"):
+					text_keys.append(s["tip"])
+				if not (s is Dictionary) or not str(s.get("target", "panel")) in ["panel", "tab", "clue", "threads", "row", "field"]:
+					push_error("%s journal.guide.%s: paso con target desconocido: %s" % [where, step, s])
+					errors += 1
+	var idle: Dictionary = GameConfig.value("idle_thoughts", {})
+	if not idle.is_empty():
+		if idle.has("key"):
+			text_keys.append(idle["key"])
+		elif not idle.has("key_prefix"):
+			push_error("%s: idle_thoughts necesita key (o key_prefix + id de cada deducción)" % where)
+			errors += 1
+		for number: String in ["after_seconds", "zoom", "seconds", "cooldown_minutes"]:
+			if idle.has(number) and not (idle[number] is float or idle[number] is int) or float(idle.get(number, 1)) < 0.0:
+				push_error("%s: idle_thoughts.%s tiene que ser un número de 0 en adelante" % [where, number])
+				errors += 1
 	for key: String in text_keys:
 		errors += _check_key(key, csv_keys, where)
 	# gente que existe: ficha en el diario o personaje con horario (los pasajeros no tienen ficha)
@@ -290,7 +360,27 @@ static func _validate_locks(csv_keys: Dictionary) -> int:
 			errors += 1
 			continue
 		errors += _check_flags(locks[lock_id].get("open_if_any", []), where)
+		errors += _check_flags(locks[lock_id].get("closed_if_any", []), where)
 		errors += _check_key(locks[lock_id].get("toast_key", ""), csv_keys, where)
+	return errors
+
+
+## Puertas de reja (data/world.json, props con "closed_if_any"): flags reales y el dibujo de abierta existe.
+static func _validate_gates() -> int:
+	var errors: int = 0
+	var world: Dictionary = GameConfig.read_data("res://data/world.json")
+	var props: Dictionary = world.get("props", {}).get("list", {})
+	var props_dir: String = str(world.get("paths", {}).get("props_dir", ""))
+	for kind: String in props:
+		var def: Variant = props[kind]
+		if not def is Dictionary or not (def as Dictionary).has("closed_if_any"):
+			continue
+		var where: String = "data/world.json props." + kind
+		errors += _check_flags((def as Dictionary)["closed_if_any"], where)
+		var open: String = str((def as Dictionary).get("open", ""))
+		if open != "" and props_dir != "" and not ResourceLoader.exists(props_dir + open + ".png"):
+			push_error("%s: no existe el dibujo de abierta '%s'" % [where, open])
+			errors += 1
 	return errors
 
 
@@ -522,7 +612,27 @@ static func _validate_escort(csv_keys: Dictionary) -> int:
 			if tile.size() != 2 or ZoneManager.is_cell_solid(dest_zone, Vector2i(int(tile[0]), int(tile[1]))):
 				push_error("%s: destination.%s %s no es una celda libre de %s" % [where, field, tile, dest_zone])
 				errors += 1
-	for key: String in (cfg.get("call_keys", []) as Array) + [cfg.get("force_bark", "")]:
+	var tour: Dictionary = cfg.get("tour", {})
+	for i: int in (tour.get("stops", []) as Array).size():
+		var stop: Dictionary = tour["stops"][i]
+		var stop_zone: String = str(stop.get("zone", ""))
+		if not ZoneManager.has_zone(stop_zone):
+			push_error("%s: tour.stops[%d]: la zona '%s' no existe" % [where, i, stop_zone])
+			errors += 1
+			continue
+		if not entries.has(str(stop.get("entry", ""))):
+			push_error("%s: tour.stops[%d]: el diálogo de %s no tiene la entrada '%s'" % [where, i, npc, stop.get("entry", "")])
+			errors += 1
+		for field: String in ["tile", "player_tile"]:
+			var tile: Array = stop.get(field, [])
+			if tile.size() != 2 or ZoneManager.is_cell_solid(stop_zone, Vector2i(int(tile[0]), int(tile[1]))):
+				push_error("%s: tour.stops[%d].%s %s no es una celda libre de %s" % [where, i, field, tile, stop_zone])
+				errors += 1
+	for entry: String in (tour.get("nag_entries", []) as Array) + ([tour["force_entry"]] if tour.has("force_entry") else []):
+		if not entries.has(entry):
+			push_error("%s: el diálogo de %s no tiene la entrada '%s'" % [where, npc, entry])
+			errors += 1
+	for key: String in (cfg.get("call_keys", []) as Array) + (tour.get("call_keys", []) as Array) + [cfg.get("force_bark", "")]:
 		errors += _check_key(key, csv_keys, where)
 	if int(cfg.get("max_nags", 0)) > (cfg.get("nag_entries", []) as Array).size():
 		push_error("%s: max_nags pide más vueltas que nag_entries" % where)
@@ -667,6 +777,17 @@ static func _validate_speeches(csv_keys: Dictionary) -> int:
 		for key: String in speech.get("lines", []):
 			errors += _check_key(key, csv_keys, where)
 		errors += _check_flags(speech.get("reveals", []), where)
+		if speech.has("doing"):
+			var wanted: Variant = speech["doing"]
+			var done: Array = []
+			var sched: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://data/schedules/%s.json" % speech.get("npc", "")))
+			if sched is Dictionary:
+				for entry: Dictionary in sched.get("entries", []):
+					done.append(str(entry.get("doing", "")))
+			for what: Variant in (wanted if wanted is Array else [wanted]):
+				if not str(what) in done:
+					push_error("%s: doing \"%s\" no está en su horario (nunca hablaría)" % [where, what])
+					errors += 1
 	return errors
 
 
@@ -709,7 +830,7 @@ static func _validate_barks(csv_keys: Dictionary) -> int:
 		var where_call: String = "barks.json call " + call["id"]
 		if not call.get("dialogue", false):   # los llamados que abren un diálogo no llevan frase
 			errors += _check_key(call.get("key", ""), csv_keys, where_call)
-		elif not DialogueManager.has_dialogue(call["npc"]):
+		elif not DialogueManager.has_dialogue(call["npc"]) and not _special_file("dialogue", call["npc"]):
 			push_error("%s: dialogue:true pero %s no tiene diálogo" % [where_call, call["npc"]])
 			errors += 1
 		for zone_field: String in ["zone", "npc_zone"]:
@@ -748,7 +869,7 @@ static func _validate_barks(csv_keys: Dictionary) -> int:
 		for key: String in keys:
 			errors += _check_key(key, csv_keys, "barks.json brush")
 	for npc_id: String in npcs:
-		if not FileAccess.file_exists("res://data/schedules/%s.json" % npc_id):
+		if not _has_schedule(npc_id):
 			push_error("barks.json: '%s' no tiene horario (data/schedules)" % npc_id)
 			errors += 1
 	return errors
@@ -826,10 +947,17 @@ static func _validate_schedules() -> int:
 			if not zones.has(target):
 				push_error("zones.json: %s conecta con zona inexistente '%s'" % [zone_id, target])
 				errors += 1
-	for file_name in DirAccess.get_files_at("res://data/schedules/"):
+	return errors + _validate_schedule_dir("res://data/schedules/", zones)
+
+
+## Los horarios de una carpeta (la de siempre o la de una jornada especial): horas en orden, zonas que existen y celdas
+## que se pisan (y, sentado, una libre al lado del asiento).
+static func _validate_schedule_dir(dir: String, zones: Dictionary) -> int:
+	var errors: int = 0
+	for file_name in DirAccess.get_files_at(dir):
 		if not file_name.ends_with(".json"):
 			continue
-		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://data/schedules/" + file_name))
+		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(dir + file_name))
 		if typeof(parsed) != TYPE_DICTIONARY:
 			push_error("%s: JSON inválido" % file_name)
 			errors += 1
@@ -859,3 +987,147 @@ static func _validate_schedules() -> int:
 						push_error("%s: %s en %s cae sobre una pared u objeto (celda %s)" % [file_name, entry["time"], zone_id, raw])
 						errors += 1
 	return errors
+
+
+## data/game.json "special_days": fecha AAAA-MM-DD, horario que empieza antes de terminar, carpeta propia que existe,
+## reparto con su hoja y su horario, escenas de zona que existen y tinte de 3 o 4 números; y los diálogos y horarios de
+## su carpeta, revisados como los de siempre.
+static func _validate_special_days(csv_keys: Dictionary) -> int:
+	var errors: int = 0
+	var days: Dictionary = GameConfig.value("special_days", {})
+	var clock := RegEx.create_from_string("^\\d{1,2}:\\d{2}$")
+	var zones: Dictionary = {}
+	for zone_id: String in ZoneManager.zone_ids():
+		zones[zone_id] = true
+	for day_id: String in days:
+		if day_id.begins_with("_"):
+			continue
+		var where: String = "data/game.json special_days.%s" % day_id
+		if not days[day_id] is Dictionary:
+			push_error("%s: tiene que ser un objeto" % where)
+			errors += 1
+			continue
+		var day: Dictionary = days[day_id]
+		var date: String = str(day.get("date", ""))
+		if date != "" and not RegEx.create_from_string("^\\d{4}-\\d{2}-\\d{2}$").search(date):
+			push_error("%s: date tiene que ser AAAA-MM-DD (dice '%s')" % [where, date])
+			errors += 1
+		var window: Array[int] = [GameConfig.day_start(), GameConfig.day_end()]
+		for i in 2:
+			var field: String = ["start", "end"][i]
+			if not day.has(field):
+				continue
+			if clock.search(str(day[field])) == null:
+				push_error("%s: %s tiene que ser HH:MM (dice '%s')" % [where, field, day[field]])
+				errors += 1
+			else:
+				window[i] = TimeManager.parse_clock(str(day[field]))
+		if window[1] <= window[0]:
+			push_error("%s: termina antes de empezar" % where)
+			errors += 1
+		var dir: String = str(day.get("data_dir", ""))
+		if dir != "" and not DirAccess.dir_exists_absolute(dir):
+			push_error("%s: data_dir '%s' no existe" % [where, dir])
+			errors += 1
+			dir = ""
+		var cast: Dictionary = day.get("cast", {})
+		for id: String in cast:
+			if not ResourceLoader.exists(str(cast[id])):
+				push_error("%s: la hoja de '%s' (%s) no existe" % [where, id, cast[id]])
+				errors += 1
+			if dir == "" or not FileAccess.file_exists("%s/schedules/%s.json" % [dir, id]):
+				push_error("%s: '%s' está en el reparto pero no tiene horario en data_dir/schedules" % [where, id])
+				errors += 1
+		var scenes: Dictionary = day.get("zone_scenes", {})
+		for zone_id: String in scenes:
+			if not ZoneManager.has_zone(zone_id):
+				push_error("%s: zone_scenes nombra la zona '%s', que no existe" % [where, zone_id])
+				errors += 1
+			if not ResourceLoader.exists(str(scenes[zone_id])):
+				push_error("%s: la escena de '%s' (%s) no existe" % [where, zone_id, scenes[zone_id]])
+				errors += 1
+		var tint: Array = day.get("tint", [])
+		if not tint.is_empty() and not tint.size() in [3, 4]:
+			push_error("%s: tint tiene que tener 3 o 4 números (r, g, b[, a])" % where)
+			errors += 1
+		if dir == "":
+			continue
+		var dialogue_dir: String = dir.path_join("dialogue") + "/"
+		if DirAccess.dir_exists_absolute(dialogue_dir):
+			for file_name: String in DirAccess.get_files_at(dialogue_dir):
+				if file_name.ends_with(".json"):
+					errors += _validate_file(dialogue_dir + file_name, csv_keys)
+		var schedule_dir: String = dir.path_join("schedules") + "/"
+		if DirAccess.dir_exists_absolute(schedule_dir):
+			errors += _validate_schedule_dir(schedule_dir, zones)
+	return errors
+
+
+## data/work.json (WorkManager): hay un flag para la orden de trabajo (rol "work_received"), la entrega es HH:MM y cada
+## tarea tiene id único, nombre en el CSV, duración, zona que existe, un minijuego que extiende Minigame y flags reales.
+static func _validate_work(csv_keys: Dictionary) -> int:
+	return _validate_work_data(GameConfig.read_data(WorkManager.WORK_PATH), csv_keys)
+
+
+static func _validate_work_data(work: Dictionary, csv_keys: Dictionary) -> int:
+	if work.is_empty():
+		return 0
+	var errors: int = 0
+	var where: String = "data/work.json"
+	if GameConfig.flag("work_received") == "":
+		push_error("%s: data/game.json flags no dice qué flag es la orden de trabajo (work_received): no se podría empezar" % where)
+		errors += 1
+	if work.has("deadline") and RegEx.create_from_string("^\\d{1,2}:\\d{2}$").search(str(work["deadline"])) == null:
+		push_error("%s: deadline tiene que ser HH:MM (dice '%s')" % [where, work["deadline"]])
+		errors += 1
+	var ids: Dictionary = {}
+	for task: Variant in work.get("tasks", []):
+		var id: String = str(task.get("id", "")) if task is Dictionary else ""
+		if id == "" or ids.has(id):
+			push_error("%s: tarea sin id o con id repetido (%s)" % [where, task])
+			errors += 1
+			continue
+		ids[id] = true
+		var at: String = "%s tarea %s" % [where, id]
+		errors += _check_key(str(task.get("name_key", "")), csv_keys, at)
+		if not (task.get("duration") is float or task.get("duration") is int) or float(task["duration"]) <= 0.0:
+			push_error("%s: duration tiene que ser un número de minutos mayor que 0" % at)
+			errors += 1
+		if task.has("zone") and not ZoneManager.has_zone(str(task["zone"])):
+			push_error("%s: la zona '%s' no existe" % [at, task["zone"]])
+			errors += 1
+		if not _extends_minigame(str(task.get("minigame", ""))):
+			push_error("%s: minigame '%s' no es un script que extienda Minigame" % [at, task.get("minigame", "")])
+			errors += 1
+		for reveal: Variant in task.get("reveals", []):
+			if not reveal is Dictionary or not reveal.has("flag"):
+				push_error("%s: cada reveal es {flag, requires?, after?}" % at)
+				errors += 1
+				continue
+			errors += _check_flags([reveal["flag"]] + reveal.get("requires", []), at)
+	return errors
+
+
+## ¿El script de `path` extiende Minigame (work/minigame.gd)? Sin crearlo: sigue la cadena de scripts base.
+static func _extends_minigame(path: String) -> bool:
+	var script: Script = load(path) as Script if ResourceLoader.exists(path) else null
+	while script != null:
+		if script.resource_path == "res://addons/jornada/work/minigame.gd":
+			return true
+		script = script.get_base_script()
+	return false
+
+
+## ¿Tiene horario `npc_id`? El de siempre o el de alguna jornada especial (data/game.json "special_days": su gente solo
+## existe ese día).
+static func _has_schedule(npc_id: String) -> bool:
+	return FileAccess.file_exists("res://data/schedules/%s.json" % npc_id) or _special_file("schedules", npc_id)
+
+
+## ¿Tiene `id` un archivo de `kind` ("schedules", "dialogue") en alguna jornada especial?
+static func _special_file(kind: String, id: String) -> bool:
+	var days: Dictionary = GameConfig.value("special_days", {})
+	for day_id: String in days:
+		if days[day_id] is Dictionary and FileAccess.file_exists("%s/%s/%s.json" % [str(days[day_id].get("data_dir", "")), kind, id]):
+			return true
+	return false

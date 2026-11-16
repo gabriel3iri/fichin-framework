@@ -7,7 +7,7 @@ extends Node
 ##     deducciones ya resueltas.
 ##   - Los hilos son del jugador: sobreviven a los loops y entran en el guardado. Una pista va en un solo hilo.
 ##   - Con deducciones en modo manual (data/game.json "deductions.manual") es la única forma de resolverlas.
-##   - Pensar lleva tiempo, pero no mientras se mira el diario (el mundo no sigue sin que el técnico lo vea): cada pista
+##   - Pensar lleva tiempo, pero no mientras se mira el diario (el mundo no sigue sin que el jugador lo vea): cada pista
 ##     puesta en un hilo y cada caso resuelto suman minutos (data/game.json "deductions.think_minutes": place, solve)
 ##     que el reloj cobra de una vez al cerrar el diario (`spend_thinking`).
 
@@ -63,8 +63,22 @@ func thread_of(flag: String) -> int:
 	return -1
 
 
+## Usada: está en un hilo, o ya no sirve para nada (is_spent). En la lista se ve tenue y con la marca.
 func is_used(flag: String) -> bool:
-	return thread_of(flag) >= 0
+	return thread_of(flag) >= 0 or is_spent(flag)
+
+
+## Ya no le queda caso: todas las deducciones en las que entra (obligatoria o alternativa) están resueltas. Pasa con una
+## pista alternativa que sobró (el caso se armó con la otra): queda como usada aunque no esté en ningún hilo. Una pista
+## que todavía sirve para otro caso sin resolver no cuenta.
+func is_spent(flag: String) -> bool:
+	var found: bool = false
+	for def: Dictionary in DeductionSystem.definitions():
+		if flag in def["all_of"] or flag in def["any_of"]:
+			if not DeductionSystem.is_resolved(def["id"]):
+				return false
+			found = true
+	return found
 
 
 func new_thread() -> int:
@@ -84,8 +98,8 @@ func remove_thread(index: int) -> void:
 
 ## Pone la pista en el hilo (si estaba en otro, la saca de ahí). Los hilos resueltos no se tocan.
 func place(flag: String, index: int) -> bool:
-	if index < 0 or index >= threads.size() or threads[index]["solved"] != "" or not flag in clues():
-		return false
+	if index < 0 or index >= threads.size() or threads[index]["solved"] != "" or not flag in clues() or is_spent(flag):
+		return false   # una pista sin caso pendiente no va a ningún hilo
 	var clue_list: Array = threads[index]["clues"]
 	if flag in clue_list or clue_list.size() >= MAX_CLUES:
 		return false

@@ -2,12 +2,14 @@ class_name DialogueBox
 extends CanvasLayer
 ## Caja de diálogo inferior con placa de nombre, texto que se va escribiendo y opciones.
 ## Espacio/Enter avanza (o completa el texto si aún se está escribiendo), 1-9 elige una
-## opción (canon 09 §12). E también avanza; eso lo procesa el jugador.
+## opción. E también avanza; eso lo procesa el jugador.
 
 const COLOR_OPTION: Color = Color(1.0, 0.804, 0.612)
 ## Retratos (addons/jornada/tools/pixel/portrait.py), a la izquierda de la caja y del tamaño de su imagen (96x96 en
-## Rabenholz, 64x64 en el juego de ejemplo). Los objetos examinables no tienen.
+## un juego, 64x64 en el juego de ejemplo). Los objetos examinables no tienen.
 const PORTRAIT_PATH: String = "res://assets/generated_assets/portraits/%s.png"
+const ANGRY_PORTRAIT_PATH: String = "res://assets/generated_assets/portraits/angry/%s_angry.png"
+const HAPPY_PORTRAIT_PATH: String = "res://assets/generated_assets/portraits/happy/%s_happy.png"
 const COLOR_OPTION_HOVER: Color = Color(0.945, 0.98, 0.933)
 ## Opacidad de una opción ya usada (DialogueManager.option_used).
 const USED_ALPHA: float = 0.5
@@ -22,6 +24,7 @@ const USED_ALPHA: float = 0.5
 var _portrait: TextureRect
 var _trust_bar: TrustBar
 var _person: String = ""
+var _npc_id: String = ""
 var _reveal: Tween
 var _pending_stage: String = ""
 var _pending_has_options: bool = false
@@ -78,12 +81,16 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _on_started(npc_id: String) -> void:
 	_box.visible = true
-	var path: String = PORTRAIT_PATH % npc_id
-	_portrait.texture = load(path) if ResourceLoader.exists(path) else null
-	_portrait.visible = _portrait.texture != null
+	_person = JournalManager.person_for_dialogue(npc_id)
+	_npc_id = npc_id
+	if _person != "":
+		_npc_id = _person
+		var sheet: String = JournalManager.person(_person).get("sheet", "")
+		if sheet != "":
+			_npc_id = sheet
+	_set_portrait(_expression_for_trust(Trust.level(_person)))
 	if _portrait.texture != null:
 		_place_portrait(_portrait.texture.get_size())
-	_person = JournalManager.person_for_dialogue(npc_id)
 	_trust_bar.visible = Trust.enabled and _person != "" and _portrait.visible
 	if _trust_bar.visible:
 		_trust_bar.low = Trust.min_level
@@ -92,9 +99,36 @@ func _on_started(npc_id: String) -> void:
 
 
 func _on_trust_changed(person: String, level: int, _delta: int) -> void:
-	if person == _person:
+	if person != _person:
+		return
+	if _trust_bar.visible:
 		_trust_bar.set_level(level)
+	_set_portrait(_expression_for_trust(level))
 
+
+## Confianza −1/-2: enojo; 0/1: neutro; 2/3: felicidad. Una variante opcional que falte usa el retrato neutro.
+func _expression_for_trust(level: int) -> String:
+	if level < 0:
+		return "angry"
+	if level >= 2:
+		return "happy"
+	return "neutral"
+
+
+func _set_portrait(expression: String) -> void:
+	if _npc_id == "":
+		return
+	var path: String = PORTRAIT_PATH % _npc_id
+	var variant: String = ""
+	match expression:
+		"angry":
+			variant = ANGRY_PORTRAIT_PATH % _npc_id
+		"happy":
+			variant = HAPPY_PORTRAIT_PATH % _npc_id
+	if variant != "" and ResourceLoader.exists(variant):
+		path = variant
+	_portrait.texture = load(path) if ResourceLoader.exists(path) else null
+	_portrait.visible = _portrait.texture != null
 
 ## Mismo anclaje que la caja (abajo al centro), pegado a su borde izquierdo y apoyado en su base.
 func _make_portrait() -> TextureRect:
@@ -124,7 +158,7 @@ func _place_portrait(size: Vector2) -> void:
 
 func _on_line(speaker: String, text: String, stage_direction: String, options: Array, _has_next: bool) -> void:
 	_speaker.text = speaker
-	# Los nombres de la gente, de otro color: el técnico los anota (Identification.hear_text, en DialogueManager).
+	# Los nombres de la gente, de otro color: el jugador los anota (Identification.hear_text, en DialogueManager).
 	_text.text = Identification.mark_names(text.replace("[", "[lb]"),
 			"[color=#%s]" % UiStyle.DIALOGUE_NAME.to_html(false), "[/color]")
 	_pending_stage = stage_direction
@@ -189,6 +223,7 @@ func _on_ended(_npc_id: String) -> void:
 	_portrait.visible = false
 	_trust_bar.visible = false
 	_person = ""
+	_npc_id = ""
 
 
 ## Confianza de quien habla (Trust): una barra que se llena según el nivel, roja en el mínimo, amarilla en 0 y verde en el

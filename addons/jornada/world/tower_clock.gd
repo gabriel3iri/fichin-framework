@@ -2,10 +2,12 @@ class_name TowerClock
 extends Node2D
 ## Agujas del reloj de la torre (la esfera está dibujada en el sprite del edificio).
 ## Se dibujan píxel a píxel para que no queden líneas suavizadas.
-## El campanario va cuatro minutos adelantado (flag church_bell_offset; final C: "el Padre Simeon
-## nunca lo ajusta").
+## Puede ir adelantado (buildings.json, tercer número de "clock").
 
 const OFFSET_MINUTES: float = 4.0
+
+## Minutos de adelanto de este reloj (buildings.json: tercer número de "clock"; sin él, OFFSET_MINUTES).
+var offset_minutes: float = OFFSET_MINUTES
 const HOUR_LEN: float = 3.0
 const MINUTE_LEN: float = 5.0
 const INK: Color = Color("#1F1F1F")
@@ -16,7 +18,7 @@ func _ready() -> void:
 
 
 func _draw() -> void:
-	var minutes: float = TimeManager.minutes + OFFSET_MINUTES
+	var minutes: float = TimeManager.minutes + offset_minutes
 	_hand(fmod(minutes, 60.0) / 60.0 * TAU, MINUTE_LEN)
 	_hand(fmod(minutes / 60.0, 12.0) / 12.0 * TAU, HOUR_LEN)
 	draw_rect(Rect2(0, 0, 1, 1), INK)

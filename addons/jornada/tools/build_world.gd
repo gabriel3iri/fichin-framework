@@ -37,6 +37,8 @@ var TILE: int = 16
 var _cfg: Dictionary
 var _paths: Dictionary
 var _tiles: Array = []
+## Celdas de mostrador de la zona que se está armando (lo que se apoya encima sube con la tapa: parts.counter_lift).
+var _counter_cells: Dictionary = {}
 var _tile_ids: Dictionary = {}
 var _prefix: String = ""
 var _variant_rows: Dictionary = {}
@@ -370,6 +372,7 @@ func _build_zone(zone_id: String, zone_cfg: Dictionary, tileset: TileSet) -> voi
 	ground.owner = root
 	_fill_ground(root, ground, cells, outdoor, trees)
 	_add_overlays(root, zone_id)
+	_add_sorted_overlays(root, zone_id)
 	if kind != "interior":
 		_add_buildings(root, zone_id)
 	for d: Dictionary in doors:
@@ -380,7 +383,10 @@ func _build_zone(zone_id: String, zone_cfg: Dictionary, tileset: TileSet) -> voi
 			_add_edge(root, target, conns[target], size)
 	for spot: Dictionary in layout.get("spots", []):
 		_add_spot(root, spot)
-	_add_props(root, layout.get("props", []), outdoor)
+	_counter_cells.clear()
+	if kind == "interior":
+		_add_counters(root, layout)
+	_add_props(root, layout.get("props", []), outdoor, cells if kind == "interior" else {})
 	_add_inspectables(root, zone_id)
 	for n: Dictionary in layout.get("nodes", []):
 		_add_node(root, n)
@@ -650,6 +656,38 @@ func _add_overlays(root: Node2D, zone_id: String) -> void:
 		sprite.owner = root
 
 
+## Recortes de un atlas que se ordenan por Y con los personajes (árboles y rocas del borde), si existen. Cada
+## "sorted_overlays" es un JSON {"texture": png, "pieces": [[ax, ay, w, h, x, y, pie], ...]}: el recorte (ax, ay, w, h)
+## del atlas se dibuja con su esquina en (x, y) de la zona y se ordena por `pie` (la base de lo más cercano que tiene).
+func _add_sorted_overlays(root: Node2D, zone_id: String) -> void:
+	for overlay: Dictionary in _paths.get("sorted_overlays", []):
+		var path: String = str(overlay["path"]).replace("{zone}", zone_id)
+		if not FileAccess.file_exists(path):
+			continue
+		var data: Dictionary = _read_json(path)
+		if not ResourceLoader.exists(str(data.get("texture", ""))):
+			continue
+		var texture: Texture2D = load(str(data["texture"]))
+		var holder := Node2D.new()
+		holder.name = overlay["name"]
+		holder.y_sort_enabled = true
+		root.add_child(holder)
+		holder.owner = root
+		var i: int = 0
+		for p: Array in data.get("pieces", []):
+			var sprite := Sprite2D.new()
+			sprite.name = "Piece%d" % i
+			sprite.texture = texture
+			sprite.centered = false
+			sprite.region_enabled = true
+			sprite.region_rect = Rect2(int(p[0]), int(p[1]), int(p[2]), int(p[3]))
+			sprite.position = Vector2(int(p[4]), int(p[6]))
+			sprite.offset = Vector2(0, int(p[5]) - int(p[6]))
+			holder.add_child(sprite)
+			sprite.owner = root
+			i += 1
+
+
 ## Edificios en 3/4 (buildings.json): el nodo está en la base de la fachada para que el orden
 ## por Y tape a quien camina detrás. Las celdas del Ground siguen siendo las que colisionan.
 ## "SunShadows" (en y = 0, debajo de todo) lo llena DayLight con la sombra del sol de cada edificio.
@@ -698,6 +736,8 @@ func _add_buildings(root: Node2D, zone_id: String) -> void:
 			clock.name = "TowerClock"
 			clock.set_script(load("res://addons/jornada/world/tower_clock.gd"))
 			clock.position = Vector2(b["clock"][0], b["clock"][1] - int(r[3]) * TILE)
+			if (b["clock"] as Array).size() > 2:
+				clock.set("offset_minutes", float(b["clock"][2]))
 			node.add_child(clock)
 			clock.owner = root
 
@@ -726,6 +766,10 @@ func _smoke(at: Vector2, heavy: bool, node_name: String) -> CPUParticles2D:
 	return p
 
 
+## Px que la franja de salida se extiende afuera del mapa.
+const EDGE_OUT: float = 160.0
+
+
 ## Franja de salida en el borde: al pisarla, la pantalla se desliza a la zona vecina.
 func _add_edge(root: Node2D, target: String, conn: Dictionary, size: Vector2i) -> void:
 	var first: int = int(conn["range"][0])
@@ -738,16 +782,19 @@ func _add_edge(root: Node2D, target: String, conn: Dictionary, size: Vector2i) -
 	area.set("target_zone", target)
 	area.collision_layer = 0
 	area.collision_mask = 4
-	var shape_size := Vector2(8, length)
+	# La franja va de 8 px adentro del borde hasta EDGE_OUT px afuera: aunque el jugador corra (o la F acelere el juego)
+	# y en un cuadro se pase de los 8 px, igual queda adentro y cambia de zona en vez de seguir de largo fuera del mapa.
+	var thick: float = 8.0 + EDGE_OUT
+	var shape_size := Vector2(thick, length)
 	match conn["side"]:
-		"east": area.position = Vector2(size.x * TILE - 4, mid)
-		"west": area.position = Vector2(4, mid)
+		"east": area.position = Vector2(size.x * TILE - 8 + thick / 2.0, mid)
+		"west": area.position = Vector2(8 - thick / 2.0, mid)
 		"south":
-			area.position = Vector2(mid, size.y * TILE - 4)
-			shape_size = Vector2(length, 8)
+			area.position = Vector2(mid, size.y * TILE - 8 + thick / 2.0)
+			shape_size = Vector2(length, thick)
 		_:
-			area.position = Vector2(mid, 4)
-			shape_size = Vector2(length, 8)
+			area.position = Vector2(mid, 8 - thick / 2.0)
+			shape_size = Vector2(length, thick)
 	root.add_child(area)
 	area.owner = root
 	var shape := CollisionShape2D.new()
@@ -776,8 +823,26 @@ func _foot(tile: Array) -> Vector2:
 	return Vector2(int(tile[0]) * TILE + TILE / 2.0, int(tile[1]) * TILE + TILE)
 
 
+## Mostradores dibujados como objetos ordenados con los personajes (world.json parts.counter_sprites: [izquierda,
+## medio, derecha]): la celda sigue siendo el tile sólido del mostrador, pero encima va la pieza, más alta que un tile
+## (frente y tapa), que tapa las piernas de quien está detrás en vez de quedar debajo de todo. Sin counter_sprites, el
+## mostrador es solo el tile (como antes).
+func _add_counters(root: Node2D, layout: Dictionary) -> void:
+	var sprites: Array = _cfg["parts"].get("counter_sprites", [])
+	for c: Array in layout.get("counters", []):
+		for x in range(int(c[0]), int(c[1]) + 1):
+			var tile := Vector2i(x, int(c[2]))
+			_counter_cells[tile] = true
+			if sprites.size() < 3:
+				continue
+			var part: String = sprites[0] if x == int(c[0]) else sprites[2] if x == int(c[1]) else sprites[1]
+			_add_decor(root, part, tile)
+
+
 ## Decorado del layout. Afuera, algunos objetos cambian de dibujo según la celda (world.json "variants").
-func _add_props(root: Node2D, props: Array, outdoor: bool) -> void:
+## En un interior (`walls` = las celdas del cuarto), la base de lo que queda a menos de un tile de una pared se estira
+## hasta ella: así no se puede pasar por detrás de un reloj de pie o de una biblioteca.
+func _add_props(root: Node2D, props: Array, outdoor: bool, walls: Dictionary = {}) -> void:
 	var table: Dictionary = _cfg["props"].get("list", {})
 	var skip: Array = _cfg["props"].get("skip", [])
 	for p: Dictionary in props:
@@ -793,7 +858,7 @@ func _add_props(root: Node2D, props: Array, outdoor: bool) -> void:
 				if roll < 0.0:
 					kind = other
 					break
-		_add_decor(root, kind, tile)
+		_add_decor(root, kind, tile, walls)
 
 
 func _collider(kind: String) -> Vector2:
@@ -801,7 +866,7 @@ func _collider(kind: String) -> Vector2:
 	return Vector2(c[0], c[1])
 
 
-func _add_decor(root: Node2D, kind: String, tile: Vector2i) -> void:
+func _add_decor(root: Node2D, kind: String, tile: Vector2i, walls: Dictionary = {}) -> void:
 	var node: Node2D = load("res://addons/jornada/scenes/prop.tscn").instantiate()
 	node.name = "%s_%d_%d" % [kind.capitalize(), tile.x, tile.y]
 	node.set("prop_texture", load(_paths["props_dir"] + kind + ".png"))
@@ -810,11 +875,54 @@ func _add_decor(root: Node2D, kind: String, tile: Vector2i) -> void:
 	node.set("flat", bool(def.get("flat", false)))
 	node.set("frames", int(def.get("frames", 1)))   # animado: tira de cuadros
 	node.set("fps", float(def.get("fps", 6.0)))
-	node.set("raise", float(def.get("raise", 0.0)))   # se apoya más arriba (sobre un mostrador)
+	var lift: float = float(_cfg["parts"].get("counter_lift", 0)) if _counter_cells.has(tile) and def.has("raise") else 0.0
+	node.set("raise", float(def.get("raise", 0.0)) + lift)   # se apoya más arriba (sobre un mostrador)
 	node.set("shadow", bool(def.get("shadow", true)))   # false: cuelga de la pared, sin sombra en el piso
+	node.set("hung", bool(def.get("wall", false)))   # cuelga de la pared: quien pasa pegado a ella va por delante
+	if def.has("closed_if_any"):   # una puerta de reja: cerrada con esos flags, abierta (el dibujo de "open") sin ellos
+		node.set("closed_if_any", PackedStringArray(def["closed_if_any"]))
+		if def.has("open"):
+			node.set("open_texture", load(_paths["props_dir"] + str(def["open"]) + ".png"))
 	node.position = _foot([tile.x, tile.y])
+	if not walls.is_empty():
+		var base: Vector2 = _collider(kind)
+		# Un mueble bajo en el piso de un interior tiene la base tan honda como su dibujo (Prop.furniture_base); contra la
+		# pared del fondo no hace falta: nadie pasa por detrás.
+		var north_wall: bool = walls.has(tile + Vector2i(0, -1)) \
+				and bool(_tiles[int(walls[tile + Vector2i(0, -1)])].get("solid", false))
+		if not north_wall and not def.get("flat", false) and not def.get("wall", false) and not def.has("raise") \
+				and not def.has("closed_if_any"):
+			base = Prop.furniture_base(node.get("prop_texture"), int(def.get("frames", 1)), base,
+					_cfg["props"].get("depth", {}))
+			node.set("collider_size", base)
+		node.set("wall_reach", _wall_reach(node.position, base, walls))
 	root.add_child(node)
 	node.owner = root
+
+
+## Cuánto estirar la base (izquierda, arriba, derecha) para que toque la pared de al lado si queda una rendija: la
+## celda donde termina la base tiene pared del otro lado (en todas las filas o columnas que ocupa la base).
+func _wall_reach(foot: Vector2, collider: Vector2, cells: Dictionary) -> Vector3:
+	if collider == Vector2.ZERO:
+		return Vector3.ZERO
+	var box := Rect2(foot + Vector2(-collider.x / 2.0, -collider.y), collider)
+	var x0: int = floori(box.position.x / TILE)
+	var x1: int = floori((box.end.x - 0.01) / TILE)
+	var y0: int = floori(box.position.y / TILE)
+	var y1: int = floori((box.end.y - 0.01) / TILE)
+	var is_wall := func(x: int, y: int) -> bool:
+		return cells.has(Vector2i(x, y)) and bool(_tiles[int(cells[Vector2i(x, y)])].get("solid", false))
+	var reach := Vector3.ZERO
+	var up: float = box.position.y - y0 * TILE
+	if up > 0.0 and range(x0, x1 + 1).all(func(x: int) -> bool: return is_wall.call(x, y0 - 1)):
+		reach.y = up
+	var left: float = box.position.x - x0 * TILE
+	if left > 0.0 and range(y0, y1 + 1).all(func(y: int) -> bool: return is_wall.call(x0 - 1, y)):
+		reach.x = left
+	var right: float = (x1 + 1) * TILE - box.end.x
+	if right > 0.0 and range(y0, y1 + 1).all(func(y: int) -> bool: return is_wall.call(x1 + 1, y)):
+		reach.z = right
+	return reach
 
 
 ## Objetos examinables de la zona (inspectables.json) y los muebles extra que los alojan. El mueble va ANTES que el

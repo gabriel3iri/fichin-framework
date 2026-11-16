@@ -1,26 +1,41 @@
 extends Node
-## Trabajo del técnico (canon 09 §5). Cinco tareas (data/work.json), cada una con un minijuego 2D.
+## Trabajo del jugador: las tareas de la orden del día (data/work.json), cada una con un minijuego 2D.
 ##
-## - La orden de trabajo llega a las 06:20 (TimedEvents); sin ella no se puede empezar.
+## - La orden de trabajo es el flag del rol "work_received" (data/game.json "flags"); sin ella no se puede empezar.
 ## - Una tarea cuesta su duración en minutos de juego, y un minijuego mal hecho cuesta más.
-## - Completar baja la sospecha (-8). Tener 0 tareas al llegar a las 17:00 sube la sospecha (+15)
-##   y deja `work_order_failed` (único castigo que persiste entre loops).
-## - Desde el loop 6, una tarea ya hecha a la perfección en un loop anterior se repite sin
-##   minijuego por el 60% del tiempo (modo veterano): la habilidad se convierte en tiempo.
+## - Completar una cambia la sospecha (`suspicion_on_complete`, −8). Tener 0 tareas a la hora de entrega (`deadline`)
+##   la sube (`suspicion_on_fail`, 15) y da el flag del rol "work_failed".
+## - Mientras nunca terminó todas, cada tarea se estira hasta la entrega (duration_for, work.json "pace"); después
+##   cuesta su duración por la destreza. Desde la jornada `veteran_from` (6; 0 = nunca), una tarea ya hecha a la
+##   perfección en una jornada anterior se repite sin minijuego por `veteran_fraction` (0,6) de su duración (modo
+##   veterano): la habilidad se convierte en tiempo.
 
 signal task_completed(task_id: String)
 signal progress_changed
 
 const WORK_PATH: String = "res://data/work.json"
+## Valores por defecto de work.json (cada juego los cambia ahí).
 const SUSPICION_ON_COMPLETE: int = -8
 const SUSPICION_ON_FAIL: int = 15
 const VETERAN_LOOP: int = 6
 const VETERAN_FRACTION: float = 0.6
+## Qué parte de su duración cuesta una tarea según la destreza (veces resuelta bien en loops anteriores): la primera
+## vez entera, después 80 % y 60 %. Son los mismos tres niveles en que los minijuegos se acortan: trabajar mejor
+## deja más día libre para explorar y anotar.
+const DURATION_BY_SKILL: Array[float] = [1.0, 0.8, 0.6]
 
 var tasks: Array = []
 ## Hora de entrega (minutos del día). Sin "deadline" en work.json no hay plazo: `has_deadline` es falso y no se muestra ni se exige.
 var deadline: int = 1 << 30
 var has_deadline: bool = false
+## Ritmo de aprendizaje (work.json "pace"; ver duration_for). Vacío: cada tarea cuesta su duración por la destreza.
+var pace: Dictionary = {}
+## Sospecha al completar una tarea y al llegar a la entrega sin ninguna; desde qué jornada vale el modo veterano (0 =
+## nunca) y qué parte de la duración cuesta (work.json; si no, las constantes de arriba).
+var suspicion_on_complete: int = SUSPICION_ON_COMPLETE
+var suspicion_on_fail: int = SUSPICION_ON_FAIL
+var veteran_from: int = VETERAN_LOOP
+var veteran_fraction: float = VETERAN_FRACTION
 var active_task: String = ""
 
 var _done: Dictionary = {}       # task_id -> true (este loop)
@@ -34,6 +49,11 @@ func _ready() -> void:
 	var parsed: Dictionary = GameConfig.read_data(WORK_PATH)
 	if not parsed.is_empty():
 		tasks = parsed.get("tasks", [])
+		pace = parsed.get("pace", {})
+		suspicion_on_complete = int(parsed.get("suspicion_on_complete", SUSPICION_ON_COMPLETE))
+		suspicion_on_fail = int(parsed.get("suspicion_on_fail", SUSPICION_ON_FAIL))
+		veteran_from = int(parsed.get("veteran_from", VETERAN_LOOP))
+		veteran_fraction = float(parsed.get("veteran_fraction", VETERAN_FRACTION))
 		if parsed.has("deadline"):
 			deadline = TimeManager.parse_clock(parsed["deadline"])
 			has_deadline = true
@@ -50,6 +70,25 @@ func mastered_ids() -> Array:
 	return _mastered.keys()
 
 
+## Veces que esta tarea se resolvió perfecta en loops anteriores (0 = nunca). Alimenta la rampa de
+## tiempo de los minijuegos: a más destreza, minijuego más corto.
+func skill_level(task_id: String) -> int:
+	return int(_mastered.get(task_id, 0))
+
+
+## Minutos de juego que cuesta hoy la tarea: su duración por la fracción que corresponde a la destreza. Con work.json
+## "pace" "share_until_all_done", mientras nunca terminó todas las tareas (rol "all_tasks_done" de game.json), cada una se
+## lleva su parte de lo que queda hasta la entrega (lo que falta repartido entre las pendientes, nunca menos que su
+## duración): el que todavía no conoce el trabajo lo estira hasta la hora.
+func duration_for(task: Dictionary) -> int:
+	if bool(pace.get("share_until_all_done", false)) and has_deadline and not is_done(task["id"]) \
+			and not LoopManager.has_knowledge(GameConfig.flag("all_tasks_done")):
+		var pending: int = maxi(1, tasks.size() - completed_count())
+		return int(roundf(maxf(float(task["duration"]), float(deadline - TimeManager.now_minutes()) / pending)))
+	var level: int = clampi(skill_level(task["id"]), 0, DURATION_BY_SKILL.size() - 1)
+	return int(roundf(float(task["duration"]) * DURATION_BY_SKILL[level]))
+
+
 func done_ids() -> Array:
 	return _done.keys()
 
@@ -57,7 +96,7 @@ func done_ids() -> Array:
 func restore_mastered(ids: Array) -> void:
 	_mastered.clear()
 	for id in ids:
-		_mastered[str(id)] = true
+		_mastered[str(id)] = 1
 
 
 func restore_done(ids: Array) -> void:
@@ -121,7 +160,7 @@ func try_start(task_id: String) -> void:
 	if TimeManager.now_minutes() >= deadline:
 		Toasts.show_key("toast_work_late")
 		return
-	if LoopManager.loop_number >= VETERAN_LOOP and _mastered.has(task_id):
+	if veteran_from > 0 and LoopManager.loop_number >= veteran_from and _mastered.has(task_id):
 		Toasts.show_key("toast_work_veteran")
 		_finish(task, true, {"veteran": true})
 		return
@@ -164,16 +203,16 @@ func _finish(task: Dictionary, success: bool, data: Dictionary) -> void:
 	# Un trabajo fallido (descarga, mecanismo roto) solo cuesta su penalización, no la jornada de la tarea.
 	var minutes: int = int(data.get("extra_minutes", 0))
 	if success:
-		minutes += int(task["duration"] * (VETERAN_FRACTION if data.get("veteran", false) else 1.0))
+		minutes += int(task["duration"] * veteran_fraction) if data.get("veteran", false) else duration_for(task)
 	if data.get("toast_key", "") != "":
 		Toasts.show_key(data["toast_key"])   # el minijuego avisa qué pasó (una descarga, una pieza rota...)
 	if success:
 		_done[task["id"]] = true
 		_times[task["id"]] = times_done(task["id"]) + 1
 		if not data.get("forced", false) and data.get("extra_minutes", 0) == 0:
-			_mastered[task["id"]] = true
+			_mastered[task["id"]] = int(_mastered.get(task["id"], 0)) + 1
 		Wallet.credit(Wallet.pay_per_task())   # pago por tarea terminada (antes solo se mencionaba en la orden)
-		GameManager.add_suspicion(SUSPICION_ON_COMPLETE)
+		GameManager.add_suspicion(suspicion_on_complete)
 		_grant_trust()
 		Toasts.show_key("toast_task_done", [tr(task["name_key"])])
 		# Todas hechas en una jornada: la primera vez, el flag del rol "all_tasks_done" (data/game.json "flags"; el
@@ -211,12 +250,12 @@ func _grant_reveals(task: Dictionary) -> void:
 
 
 ## Completar tareas da confianza con quien dio la orden (data/game.json, "work": boss y trust_at_tasks), desde la jornada
-## trust_from_loop. Antes (en Rabenholz, el primer día: todavía no hay de quién preguntarle) terminarlas todas solo la
+## `trust_from` (una jornada o un rol/flag, GameConfig.unlocked; o `trust_from_loop`). Antes, terminarlas todas solo la
 ## deja en 0 si estaba en negativo.
 func _grant_trust() -> void:
 	var boss: String = GameConfig.value("work.boss", "")
 	var levels: Dictionary = GameConfig.value("work.trust_at_tasks", {})
-	if LoopManager.loop_number < int(GameConfig.value("work.trust_from_loop", 1)):
+	if not GameConfig.unlocked(GameConfig.value("work.trust_from", GameConfig.value("work.trust_from_loop", 1))):
 		var all_tasks: int = levels.keys().map(func(k: String) -> int: return int(k)).max() if not levels.is_empty() else 0
 		if boss != "" and completed_count() >= all_tasks and Trust.level(boss) < 0:
 			Trust.change(boss, -Trust.level(boss))
@@ -234,16 +273,20 @@ func _on_loop_started(_loop_number: int) -> void:
 	_done.clear()
 	_deadline_checked = false
 	active_task = ""
-	# La orden es de cada día: vuelve a llegar cuando la entrega Klara (dialogue/klara.json, klara_order_*).
+	# La orden es de cada día: vuelve a llegar cuando la da quien la da (un diálogo del juego).
 	LoopManager.lose_knowledge(GameConfig.flag("work_received"))
 	progress_changed.emit()
 
 
 func _on_minute_changed(_hour: int, _minute: int) -> void:
+	if not LoopManager.is_regular_day():
+		return   # jornada especial que deja afuera lo de siempre: no corre
 	if _deadline_checked or TimeManager.now_minutes() < deadline:
 		return
 	_deadline_checked = true
 	if completed_count() == 0:
-		LoopManager.gain_knowledge(GameConfig.flag("work_failed"))
-		GameManager.add_suspicion(SUSPICION_ON_FAIL)
+		var failed: String = GameConfig.flag("work_failed")
+		if failed != "":
+			LoopManager.gain_knowledge(failed)
+		GameManager.add_suspicion(suspicion_on_fail)
 		Toasts.show_key("toast_work_failed")

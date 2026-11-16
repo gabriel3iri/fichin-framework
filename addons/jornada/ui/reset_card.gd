@@ -1,6 +1,6 @@
 class_name ResetCard
 extends CanvasLayer
-## Pantalla de reset entre loops (canon 07 §9): negro y una línea con el motivo, 4 segundos.
+## Pantalla de reset entre jornadas: negro y una línea con el motivo, 4 segundos.
 ## Sin contador de loops. Desde el loop 5 se añade [Continuar] [No volver a intentarlo].
 
 const FADE_IN: float = 0.9

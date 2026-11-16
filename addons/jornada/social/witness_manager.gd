@@ -1,5 +1,5 @@
 extends Node
-## Testimonios por vista (canon 04, tipo WITNESS): "el jugador vio algo con sus ojos". Si el jugador está en la zona
+## Testimonios por vista (tipo WITNESS): "el jugador vio algo con sus ojos". Si el jugador está en la zona
 ## correcta, dentro de la pantalla del NPC y en la ventana horaria de la regla, el flag se concede solo.
 ## Las reglas están en data/witness.json. No da información extra: sólo anota lo que de verdad se vio.
 ## (Lo que exige interactuar —ver el barro de las botas— sale de un diálogo, no de acá.)
@@ -48,10 +48,13 @@ func _on_minute_changed(_hour: int, _minute: int) -> void:
 			continue
 		_streak[id] = int(_streak.get(id, 0)) + 1
 		if int(_streak[id]) >= int(rule.get("minutes", 1)):
-			# Primero la conclusión del técnico, en voz alta; después, si tiene diario, el aviso.
+			# Primero la conclusión del jugador, en voz alta; después, si tiene diario, el aviso.
+			# {quien} es la persona como la conoce el jugador (nombre, apellido o los dos): nunca un nombre que no sabe.
 			var thought: String = tr("think_" + rule["flag"])
 			if thought == "think_" + rule["flag"]:
 				thought = tr("think_note_generic") % JournalManager.display_name(who)
+			elif who != "":
+				thought = thought.replace("{quien}", JournalManager.display_name(who))
 			player.think(thought, 4.5)
 			LoopManager.gain_knowledge(rule["flag"])
 

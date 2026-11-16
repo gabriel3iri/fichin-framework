@@ -5,14 +5,16 @@ extends Node
 ##     Si alguien en la zona de la puerta lo ve, el intento falla y sube la sospecha.
 ##   - Si el ocupante vuelve y encuentra al jugador adentro: sospecha y lo echa. Con la entrada `door_<ocupante>_caught` en su
 ##     diálogo de la puerta, se lo dice en una charla y lo saca al pasillo; si lo ve forzando la puerta, también.
-##   - Con "admits": false el ocupante no deja pasar a nadie: golpear solo trae su respuesta (el de la cuatro).
+##   - Con "admits": false el ocupante no deja pasar a nadie: golpear solo trae su respuesta (un huésped que no quiere visitas).
 ##   - Con la ganzúa (el flag `quiet_flag` del archivo, o alguno de esa lista) se abre en `quiet_seconds`, sin ruido y sin que nadie lo note.
+##   - Con "needs" (lista de flags) en la habitación, sin ninguno de ellos la cerradura no se fuerza: suena cerrada y el
+##     jugador piensa "locked_think".
 ## Todo se olvida al empezar el loop.
 
 const PATH: String = "res://data/private_rooms.json"
 
 ## Lo vieron forzando una puerta (no el dueño): `times` = cuántas veces hoy, contando esta. El juego decide qué pasa
-## después (en Rabenholz, quien lo vio llama al dueño de la posada y, a la tercera, va a buscar a los carabineros).
+## después (que quien lo vio llame al dueño, que vengan a buscarlo...).
 signal seen_forcing(room: String, witness: NpcActor, times: int)
 
 var _config: Dictionary = {}
@@ -82,6 +84,12 @@ func interact(door: Door, rule: Dictionary) -> void:
 	var entered: bool = false
 	if occupant_inside(room) != null:
 		entered = await _knock(door, room, rule)
+	elif not _can_force(rule):
+		AudioManager.play_sfx("door_locked", -4.0)
+		if rule.has("locked_think"):
+			player.think(tr(str(rule["locked_think"])), 3.5)
+		else:
+			Toasts.show_key("toast_door_locked")
 	elif _pending.get(room, 0) > Time.get_ticks_msec():
 		entered = await _force(door, room, rule)
 	else:
@@ -108,6 +116,12 @@ func _knock(door: Door, room: String, rule: Dictionary) -> bool:
 		door.enter()
 		return true
 	return false
+
+
+## Sin ninguno de los flags de "needs" no se puede forzar (sin "needs", siempre se puede).
+func _can_force(rule: Dictionary) -> bool:
+	var needs: Array = rule.get("needs", [])
+	return needs.is_empty() or needs.any(func(f: Variant) -> bool: return LoopManager.has_knowledge(str(f)))
 
 
 func _force(door: Door, room: String, rule: Dictionary) -> bool:

@@ -4,7 +4,7 @@ extends Node
 ##   · charlas: cuando dos se cruzan, uno habla y el otro contesta (pares propios o de vecinos en general)
 ##   · brush_off: al hablarle a alguien que no tiene diálogo ahora, contesta con una frase corta
 ##   · llamados ("calls"): un NPC le habla al jugador desde lejos al acercarse a un lugar, y puede dar flags
-##     (el encargo de las velas de Simeon). Cada uno sale una vez por loop. Campos opcionales:
+##     (un encargo). Cada uno sale una vez por loop. Campos opcionales:
 ##       time_min / time_max   ventana horaria ("HH:MM")
 ##       dialogue: true        en vez de una frase, abre el diálogo del NPC (la entrada que corresponda por sus condiciones)
 ##       npc_zone              el NPC tiene que estar en esa zona (aunque no sea la del jugador): la voz llega "a través
@@ -26,6 +26,7 @@ extends Node
 ## Ritmo y duración: `settings` de barks.json (claves de DEFAULTS), con `settings.zones.<zona>` para un lugar con
 ## más barullo (más globos a la vez, más seguido).
 
+const Daily := preload("res://addons/jornada/core/daily.gd")
 const PATH: String = "res://data/barks.json"
 ## Opacidad según la distancia al jugador (px): entera hasta NEAR, FAR_ALPHA desde FAR.
 const NEAR: float = 96.0
@@ -34,28 +35,40 @@ const FAR_ALPHA: float = 0.35
 ## Dos NPCs "se cruzan" a menos de esta distancia.
 const PAIR_RANGE: Vector2 = Vector2(48.0, 30.0)
 const TICK: float = 0.25
+const MAX_TICKS_PER_FRAME: int = 16
+## Minutos fuera de la vista después de los cuales su turno pendiente se saltea (dicho al volver, dependería de cuándo
+## volvió).
+const SOLO_GRACE: float = 2.0
 ## Ritmo del barullo (barks.json "settings" los pisa, y "settings.zones.<zona>" para una zona):
-##   solo_min..solo_max   cada cuánto habla solo cada NPC (s reales; F los acelera como a todo)
+##   solo_min..solo_max   cada cuánto habla solo cada NPC (minutos de juego: un segundo a velocidad normal)
 ##   pair_cooldown        un mismo par no vuelve a charlar antes de esto
 ##   max_at_once          globos de barullo a la vez en la zona;  min_gap: entre dos frases nuevas
 ##   seconds_*            cuánto dura un globo: base + por letra, entre min y max (cortos: casi no dan tiempo a leer)
 ##   reply_after          la respuesta sale cuando a la primera frase le queda esta fracción de su tiempo
 ##   seconds_name         lo que dura de más un globo con un nombre para anotar
+##   read_cps             letras por segundo de un lector lento: un globo con nombre dura al menos lo que lleva
+##                        leerlo entero más seconds_name (sin el tope de seconds_max), así hay tiempo de hacer clic
 ##   bubble_width         ancho máximo del texto de un globo (px)
 const DEFAULTS: Dictionary = {
 	"solo_min": 10.0, "solo_max": 26.0, "pair_cooldown": 75.0, "max_at_once": 3, "min_gap": 1.2,
 	"seconds_base": 0.8, "seconds_per_char": 0.03, "seconds_min": 1.3, "seconds_max": 2.8, "reply_after": 0.75,
-	"seconds_name": 2.0, "bubble_width": 112,
+	"seconds_name": 2.0, "read_cps": 15.0, "bubble_width": 112,
 }
 ## Llamados con "approach": a cuánto del jugador habla y cuánto espera como mucho que llegue (s reales).
 const TALK_RANGE: float = 40.0
 const APPROACH_SECONDS: float = 15.0
 
 var _data: Dictionary = {}
+## El reloj del barullo es el del juego (un minuto de juego = un segundo a velocidad normal, así los ajustes en segundos
+## valen igual): con el reloj parado (el diario, una tarea) nadie habla, y cada frase sale al mismo minuto cada jornada.
 var _clock: float = 0.0
 var _tick_left: float = 0.0
+var _tick_at: float = -1.0      # el último punto del reloj (minutos) en que se miró (_process)
+var _seen_clock: float = -1.0   # la hora del reloj en el cuadro anterior (lo que lleva el jugador en la zona)
 var _last_start: float = -100.0
 var _next_solo: Dictionary = {}      # npc_id -> _clock en que puede volver a hablar solo
+var _last_seen: Dictionary = {}      # npc_id -> _clock de la última vez que estaba a la vista
+var _solo_slots: Dictionary = {}     # "npc|min|max" -> minutos del día en que habla solo (_solo_slot)
 var _pair_ready: Dictionary = {}     # "a|b" -> _clock en que ese par puede volver a charlar
 var _last_key: Dictionary = {}       # npc_id -> última frase dicha (para no repetirla)
 var _calls_done: Dictionary = {}     # id del llamado -> true (se vacía cada loop)
@@ -80,24 +93,67 @@ func _ready() -> void:
 	LoopManager.game_reset.connect(bubbles.clear)
 	ZoneManager.zone_changed.connect(func(_z: String) -> void:
 		_next_solo.clear()
-		_zone_seconds = 0.0)
-	LoopManager.loop_started.connect(func(_n: int) -> void:
-		_calls_done.clear()
-		_generation += 1)   # un llamado que esperaba a alguien caminando queda sin efecto
-	LoopManager.game_reset.connect(func() -> void: _generation += 1)
+		_last_seen.clear()
+		_zone_seconds = 0.0
+		_seen_clock = -1.0)   # lo que lleva en la zona se cuenta desde que entró, no desde la hora de antes
+	LoopManager.loop_started.connect(func(_n: int) -> void: _reset_day())
+	LoopManager.game_reset.connect(_reset_day)
+
+
+## Cada jornada arranca igual (día de la marmota): sin la última frase de ayer ni sus esperas, así a la misma hora
+## dicen lo mismo. Un llamado que esperaba a alguien caminando queda sin efecto (_generation).
+func _reset_day() -> void:
+	_calls_done.clear()
+	_next_solo.clear()
+	_last_seen.clear()
+	_pair_ready.clear()
+	_last_key.clear()
+	_clock = 0.0
+	_tick_left = 0.0
+	_tick_at = -1.0
+	_seen_clock = -1.0
+	_last_start = -100.0
+	_zone_seconds = 0.0
+	_generation += 1
 
 
 func _process(delta: float) -> void:
 	if get_tree().paused or DialogueManager.is_active or ZoneManager.player == null:
 		return
-	_clock += delta
-	if ZoneManager.player.can_move:
-		_zone_seconds += delta
-	_tick_left -= delta
-	if _tick_left > 0.0:
-		return
-	_tick_left = TICK
-	_tick()
+	match TimeManager.world():
+		TimeManager.World.HELD:
+			return   # el diario, la orden: el mundo queda quieto
+		TimeManager.World.FREE:
+			# Reloj parado por otra cosa (el final del día, una prueba): en tiempo real.
+			_clock = TimeManager.minutes
+			_tick_at = -1.0
+			_seen_clock = -1.0
+			if ZoneManager.player.can_move:
+				_zone_seconds += delta
+			_tick_left -= delta
+			if _tick_left > 0.0:
+				return
+			_tick_left = TICK
+			_tick()
+			return
+	# Con el reloj andando, todo se cuenta con él y no con el cuadro (día de la marmota): se mira en puntos fijos del
+	# reloj (cada TICK segundos de juego). Si un cuadro tardó y se saltó alguno, se miran los que faltaron, cada uno
+	# con su hora.
+	var now: float = TimeManager.minutes
+	var step: float = TICK * maxf(TimeManager.time_scale, 0.001)
+	if _tick_at < 0.0 or now < _tick_at:
+		_tick_at = floorf(now / step) * step - step   # jornada nueva o reloj hacia atrás: desde ahora
+	if ZoneManager.player.can_move and _seen_clock >= 0.0:
+		_zone_seconds += TimeManager.seconds_since(_seen_clock)
+	_seen_clock = now
+	var ticks: int = 0
+	while _tick_at + step <= now and ticks < MAX_TICKS_PER_FRAME:
+		_tick_at += step
+		_clock = _tick_at
+		_tick()
+		ticks += 1
+	if _tick_at + step <= now:
+		_tick_at = floorf(now / step) * step   # un salto grande del reloj (una tarea): lo que quedó en el medio no se mira
 
 
 ## Opacidad de una frase dicha en `pos` según lo lejos que esté el jugador.
@@ -116,11 +172,14 @@ func setting(key: String) -> float:
 	return float(zone.get(key, settings.get(key, DEFAULTS[key])))
 
 
-## Cuánto dura en pantalla un globo con `text` (más, si trae un nombre para anotar).
+## Cuánto dura en pantalla un globo con `text`. Con un nombre para anotar, más: lo que lleva leerlo entero (sin el
+## tope de los globos comunes) y el tiempo de hacer clic, para que no se escape mientras el jugador apunta.
 func bubble_seconds(text: String) -> float:
 	var seconds: float = clampf(setting("seconds_base") + text.length() * setting("seconds_per_char"),
 			setting("seconds_min"), setting("seconds_max"))
-	return seconds + (setting("seconds_name") if bubbles != null and bubbles.has_names(text) else 0.0)
+	if bubbles == null or not bubbles.has_names(text):
+		return seconds
+	return maxf(seconds, text.length() / setting("read_cps")) + setting("seconds_name")
 
 
 ## El jugador hizo clic en un nombre de un globo: lo anota (y, si la frase se lo decía a alguien a la vista, le pone
@@ -133,7 +192,7 @@ func _on_name_clicked(field_id: String, option_id: String, _speaker: Node2D, met
 		var person: String = JournalManager.person_for_dialogue(npc_id)
 		if person != "" and _visible_here(npc_id) and Identification.is_answer(person, field_id, option_id):
 			JournalManager.learn_name(person, bit)
-	# El clic suena siempre (la lapicera); el técnico solo lo piensa la primera vez.
+	# El clic suena siempre (la lapicera); el jugador solo lo piensa la primera vez.
 	if Identification.hear(field_id, option_id):
 		AudioManager.play_sfx("ui_click", -2.0, 0.05)
 		if ZoneManager.player != null:
@@ -159,6 +218,16 @@ func _tick() -> void:
 		var actor := node as NpcActor
 		if actor == null or not actor.visible or actor.zone != ZoneManager.current_zone:
 			continue
+		# A la vista es en pantalla: quien anda por la zona fuera de cuadro no habla (nadie lo vería) y su turno vence
+		# como el de quien se fue (si no, esperaba hasta asomarse y decía o no lo pendiente según el cuadro).
+		if not bubbles.on_screen(actor, actor.bark_head()):
+			continue
+		# Si estuvo fuera de la vista, su turno pendiente ya no vale: al volver, el próximo de su agenda (si no, diría al
+		# llegar lo que le tocaba antes, y eso depende de cuándo llegó). Mientras está a la vista, un turno que no pudo
+		# salir (sin lugar para el globo, otros hablando) espera con la misma frase: el orden de lo que dice no cambia.
+		if _last_seen.has(actor.npc_id) and _clock - float(_last_seen[actor.npc_id]) > SOLO_GRACE:
+			_next_solo.erase(actor.npc_id)
+		_last_seen[actor.npc_id] = _clock
 		if actor.is_barking():
 			busy += 1
 		elif not actor.is_talking():
@@ -169,30 +238,64 @@ func _tick() -> void:
 		return
 	if _try_pair(present):
 		return
-	present.shuffle()
+	# Siempre en el mismo orden a la misma hora (día de la marmota): Daily, no shuffle.
+	present.sort_custom(func(x: NpcActor, y: NpcActor) -> bool: return Daily.index(Daily.at_minute(x.npc_id), 1000) < Daily.index(Daily.at_minute(y.npc_id), 1000))
+	# Cada uno habla en minutos fijos del día (su agenda, _solo_slot), y qué dice sale de ese minuto: no depende de
+	# cuándo entró a la zona ni del cuadro en que toca, así cada jornada dice lo mismo a la misma hora.
+	var minute: int = int(_clock)
 	for actor: NpcActor in present:
-		if not _next_solo.has(actor.npc_id):
-			# al entrar a la zona no hablan todos juntos
-			_next_solo[actor.npc_id] = _clock + randf_range(minf(2.0, setting("solo_min")), setting("solo_max"))
+		var id: String = actor.npc_id
+		if not _next_solo.has(id):
+			_next_solo[id] = float(_solo_slot(id, minute))   # al entrar (o al volver): su próximo minuto de la agenda
+		if _clock < _next_solo[id]:
 			continue
-		if _clock < _next_solo[actor.npc_id]:
-			continue
-		var lines: Array = _available(_data.get("solo", {}).get(actor.npc_id, []), actor)
+		var due: int = int(_next_solo[id])
+		var lines: Array = _available(_data.get("solo", {}).get(id, []), actor)
 		if lines.is_empty():
 			continue
-		var line: Dictionary = _pick_line(actor.npc_id, lines)
+		var line: Dictionary = _agenda_line(id, lines, due)
 		if not bubbles.has_room(actor, actor.bark_head(), tr(line["key"])):
-			_next_solo[actor.npc_id] = _clock + 1.0   # no hay lugar para el globo: lo dice en un rato
-			continue
-		_next_solo[actor.npc_id] = _clock + randf_range(setting("solo_min"), setting("solo_max"))
+			continue   # no hay lugar para el globo: lo dice apenas haya, la misma frase
+		_next_solo[id] = float(_solo_slot(id, maxi(minute, due) + 1))
 		_say(actor, line)
 		return
 
 
+## El primer minuto de la agenda de `id` desde `from`: cada uno habla cada solo_min..solo_max minutos, en minutos
+## que salen de Daily y son los mismos cada jornada (entrar a la zona un minuto antes o después no cambia qué dice).
+func _solo_slot(id: String, from: int) -> int:
+	var lo: float = setting("solo_min")
+	var hi: float = setting("solo_max")
+	var cache_key: String = "%s|%s|%s" % [id, lo, hi]
+	if not _solo_slots.has(cache_key):
+		var slots: PackedInt32Array = []
+		var t: int = int(roundf(Daily.range_f(0.0, hi, "%s@agenda" % id)))
+		while t < 24 * 60:
+			slots.append(t)
+			t += maxi(1, int(roundf(Daily.range_f(lo, hi, "%s+@%d" % [id, t]))))
+		_solo_slots[cache_key] = slots
+	var slots: PackedInt32Array = _solo_slots[cache_key]
+	var i: int = slots.bsearch(from)
+	return slots[i] if i < slots.size() else from + int(hi)
+
+
+## Qué dice en el turno `due` de su agenda: sale del minuto y no repite lo que le tocaba en el turno anterior (lo haya
+## dicho o no: si un día no hubo lugar para el globo, lo que sigue no cambia).
+func _agenda_line(id: String, lines: Array, due: int) -> Dictionary:
+	var options: Array = lines
+	var slots: PackedInt32Array = _solo_slots.get("%s|%s|%s" % [id, setting("solo_min"), setting("solo_max")], PackedInt32Array())
+	var i: int = slots.bsearch(due)
+	if i > 0 and lines.size() > 1:
+		var before: String = Daily.pick(lines, "%s@%d" % [id, slots[i - 1]])["key"]
+		options = lines.filter(func(l: Dictionary) -> bool: return l["key"] != before)
+	return Daily.pick(options, "%s@%d" % [id, due])
+
+
 ## Llamados: si el jugador está cerca del lugar y el NPC en la zona (y se cumplen los flags), el NPC le habla. Sin "zone",
 ## el lugar es el NPC mismo: le habla al que se le acerca, esté donde esté (salvo en "except_zones"). Con
-## "or_after_seconds" también sale si el jugador lleva ese tiempo en la zona sin acercarse (Klara golpea si el técnico
-## va hacia la puerta o se queda en el cuarto).
+## "or_after_seconds" también sale si el jugador lleva ese tiempo en la zona sin acercarse (golpean la puerta si el jugador
+## va hacia ella o se queda en el cuarto). "after_seconds": no sale hasta que el jugador lleve ese tiempo en la zona
+## (con control), sin frenarlo: al entrar, primero ve dónde está.
 func _check_calls() -> void:
 	var player: PlayerController = ZoneManager.player
 	for call: Dictionary in _data.get("calls", []):
@@ -213,6 +316,8 @@ func _check_calls() -> void:
 		var near: bool = distance <= float(call.get("radius", 64)) and distance >= float(call.get("min_distance", 0))
 		if not near and not (call.has("or_after_seconds") and _zone_seconds >= float(call["or_after_seconds"])):
 			continue
+		if _zone_seconds < float(call.get("after_seconds", 0.0)):
+			continue   # recién entra: primero ve dónde está (no lo frenan en la puerta)
 		if not player.can_move:
 			continue   # recién despierto, en una escena o trabajando: espera
 		var actor: NpcActor = _ready_caller(call)
@@ -259,7 +364,7 @@ func _fire(call: Dictionary, actor: NpcActor) -> void:
 
 
 ## Un llamado con "first" es lo primero que pasa en su zona: Door.enter y la E del jugador lo preguntan antes de cruzar o
-## de tocar algo, y si todavía no salió sale ahora y el jugador no hace lo otro (Klara golpea aunque el técnico vaya
+## de tocar algo, y si todavía no salió sale ahora y el jugador no hace lo otro (golpean aunque el jugador vaya
 ## derecho a la puerta o al diario). Verdadero si lo frenó.
 func intercept() -> bool:
 	if DialogueManager.is_active or Notices.is_busy() or ZoneManager.player == null:
@@ -415,7 +520,7 @@ func _try_pair(present: Array[NpcActor]) -> bool:
 			var exchange: Array = _exchange_for(a, b)
 			if exchange.is_empty():
 				continue
-			var line: Dictionary = exchange[1].pick_random()
+			var line: Dictionary = Daily.pick(exchange[1], Daily.at_minute(pair_id))
 			var first: NpcActor = exchange[0]
 			if not bubbles.has_room(first, first.bark_head(), tr(line["a"]["key"])):
 				continue
@@ -471,12 +576,12 @@ func _visible_here(npc_id: String) -> bool:
 	return false
 
 
-## Elige una línea al azar sin repetir la última que dijo ese NPC.
-func _pick_line(npc_id: String, lines: Array) -> Dictionary:
+## Elige una línea sin repetir la última que dijo ese NPC: la misma a la misma hora cada jornada (Daily).
+func _pick_line(npc_id: String, lines: Array, daily_key: String = "") -> Dictionary:
 	var options: Array = lines.filter(func(l: Dictionary) -> bool: return l["key"] != _last_key.get(npc_id, ""))
 	if options.is_empty():
 		options = lines
-	return options.pick_random()
+	return Daily.pick(options, daily_key if daily_key != "" else Daily.at_minute(npc_id))
 
 
 func _pick_key(npc_id: String, lines: Array) -> String:
@@ -486,10 +591,10 @@ func _pick_key(npc_id: String, lines: Array) -> String:
 
 
 ## Las frases que puede decir ahora: en su franja horaria, en la zona y, con "doing", solo mientras hace eso
-## (NpcActor.doing(): los planos, el telegrama).
+## (NpcActor.scheduled_doing(): los planos, el telegrama; por la hora del horario, no por el cuadro en que llegó).
 func _available(lines: Array, actor: NpcActor = null) -> Array:
 	return lines.filter(func(l: Dictionary) -> bool:
-		return _in_window(l) and (not l.has("doing") or (actor != null and actor.doing() == l["doing"])))
+		return _in_window(l) and (not l.has("doing") or (actor != null and actor.scheduled_doing() == l["doing"])))
 
 
 func _available_pairs(lines: Array) -> Array:

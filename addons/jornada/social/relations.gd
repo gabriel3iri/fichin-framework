@@ -3,7 +3,8 @@ extends RefCounted
 ## Quién sabe de quién y cómo lo cuenta (data/relations.json). Lo usa «le quería preguntar por alguien» de
 ## DialogueManager: sin el archivo, cualquiera contesta por cualquiera, como antes.
 ##
-## - from_loop: antes de esa jornada nadie habla de nadie (refuse_early).
+## - from: desde cuándo se habla de los vecinos (una jornada o un rol/flag, GameConfig.unlocked; antes, refuse_early).
+##   `from_loop` (número) sigue valiendo si no hay `from`.
 ## - gates: condiciones para que alguien hable de los vecinos (en ciertas zonas, o una persona en particular); la
 ##   primera que falta contesta con su `refuse` y, con `entry`, la charla sigue por esa entrada de quien contesta.
 ## - groups + knows: hasta dónde conoce cada uno a cada otro (none, role, name, full). Las reglas se aplican en orden y
@@ -34,6 +35,11 @@ static func enabled() -> bool:
 
 static func from_loop() -> int:
 	return int(data().get("from_loop", 1))
+
+
+## ¿Ya se habla de los vecinos? (`from` o `from_loop`).
+static func open() -> bool:
+	return GameConfig.unlocked(data().get("from", data().get("from_loop", 1)))
 
 
 ## Ids del grupo, o la lista tal cual si ya es una lista de ids.
@@ -79,7 +85,7 @@ static func rules(tie_type: String) -> Dictionary:
 
 
 ## La primera condición que falta para que `who` hable de los vecinos en `zone` (vacío si puede). Trae su `refuse` y,
-## si tiene, `entry`: la charla sigue por esa entrada del diálogo de quien contesta (Hanns ofrece otra cerveza).
+## si tiene, `entry`: la charla sigue por esa entrada del diálogo de quien contesta (ofrece otra cerveza).
 static func gate(who: String, zone: String) -> Dictionary:
 	for gate: Dictionary in data().get("gates", []):
 		if gate.has("who") and not who in members(gate["who"]):

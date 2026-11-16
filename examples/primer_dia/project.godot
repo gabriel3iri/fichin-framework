@@ -46,6 +46,7 @@ EscortSystem="*res://addons/jornada/social/escort_system.gd"
 Stamina="*res://addons/jornada/core/stamina.gd"
 Speeches="*res://addons/jornada/social/speeches.gd"
 Wallet="*res://addons/jornada/core/wallet.gd"
+IdleThoughts="*res://addons/jornada/social/idle_thoughts.gd"
 
 [display]
 

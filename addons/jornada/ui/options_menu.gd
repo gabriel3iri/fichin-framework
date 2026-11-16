@@ -1,6 +1,6 @@
 class_name OptionsMenu
 extends CanvasLayer
-## Opciones (docs/technical/ui_menu_spec.md §3): audio, video, idioma y juego. Se abre como una capa
+## Opciones: audio, video, idioma y juego. Se abre como una capa
 ## encima del menú principal o de la pausa. Todo cambia en tiempo real y se guarda solo.
 
 signal closed

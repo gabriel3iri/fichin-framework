@@ -15,6 +15,11 @@ const NO_LIMIT: int = 10000000
 var _offset: Vector2
 ## Lo que se puede ver de la zona (px del mundo).
 var _area := Rect2()
+## Acercamiento pasajero sobre el del ajuste (1 = ninguno): lo usa IdleThoughts cuando el personaje se pone a pensar.
+var focus: float = 1.0:
+	set(value):
+		focus = value
+		_apply_zoom()
 
 
 func _ready() -> void:
@@ -64,7 +69,7 @@ func _on_setting_changed(key: String) -> void:
 
 
 func _apply_zoom() -> void:
-	var z: float = ZOOMS[clampi(int(SettingsManager.get_value("camera_zoom")), 0, ZOOMS.size() - 1)]
+	var z: float = ZOOMS[clampi(int(SettingsManager.get_value("camera_zoom")), 0, ZOOMS.size() - 1)] * focus
 	zoom = Vector2(z, z)
 
 

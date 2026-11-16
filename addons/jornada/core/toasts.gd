@@ -69,7 +69,7 @@ func _on_knowledge_gained(flag: String) -> void:
 		_journal_hint()
 
 
-## Se escribió algo en el diario (JournalManager): sin diario no se anota nada, el técnico solo lo recuerda.
+## Se escribió algo en el diario (JournalManager): sin diario no se anota nada, el jugador solo lo recuerda.
 func _on_flag_noted(flag: String) -> void:
 	var kind: int = KnowledgeRegistry.kind_of(flag)
 	if kind not in NOTE_KINDS:

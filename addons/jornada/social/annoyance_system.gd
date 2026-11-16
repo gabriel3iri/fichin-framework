@@ -1,12 +1,12 @@
 extends Node
-## Fastidio: el jugador puede molestar a un NPC (propuesta de diseño; no está en el canon, ver docs/planning).
+## Fastidio: el jugador puede molestar a un NPC.
 ##
 ## Qué suma (por NPC, por loop):
 ##   · cerrarle el paso mientras camina (el NPC se detiene y espera, ver NpcActor)
 ##   · rondarlo sin hablarle (a menos de 30 px durante 8 s)
 ##   · volver a hablarle de inmediato (antes de 4 s de terminar una conversación)
 ## Cómo reacciona (data/annoyance.json):
-##   1 punto  → su gesto propio (canon 08 §3: Franz se muerde el labio, Klara se acomoda el lápiz...)
+##   1 punto  → su gesto propio (se muerde el labio, se acomoda el lápiz...)
 ##   2 puntos → una frase corta sobre la cabeza
 ##   3 puntos → "salta": se gana el flag <npc>_annoyed, el NPC se vuelve y empieza su entrada <npc>_snap
 ## El fastidio baja solo (1 punto cada 25 s sin molestarlo) y se reinicia cada loop. Un NPC solo salta una vez por loop.
@@ -62,6 +62,8 @@ func bump(npc_id: String, _reason: String = "") -> void:
 	var cfg: Dictionary = _cfg.get(npc_id, {})
 	if cfg.is_empty():
 		return
+	if EscortSystem.is_leading(npc_id):
+		return   # lo está llevando ella: que el jugador vaya pegado o le hable en cada parada no la fastidia
 	var flag: String = cfg.get("snap_flag", "")
 	if flag != "" and LoopManager.has_knowledge(flag):
 		return   # ya saltó este loop

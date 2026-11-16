@@ -1,5 +1,5 @@
 extends Node
-## Eventos horarios del canon 02 que no dependen de dónde esté el jugador (data/events.json).
+## Eventos a hora fija que no dependen de dónde esté el jugador (data/events.json).
 ## Se disparan una vez por loop en cuanto el reloj pasa su hora, aunque el reloj haya saltado.
 
 const EVENTS_PATH: String = "res://data/events.json"
@@ -7,7 +7,7 @@ const EVENTS_PATH: String = "res://data/events.json"
 var _events: Array = []
 var _fired: Dictionary = {}
 ## Fuentes de sonido con lugar: nombre -> func() -> float (cuántos dB restar según dónde esté el jugador).
-## Un evento con "source": "<nombre>" se oye más bajo cuanto más lejos. En Rabenholz, TrainSystem registra "train".
+## Un evento con "source": "<nombre>" se oye más bajo cuanto más lejos. El juego registra cada fuente (un tren, una campana).
 var _sources: Dictionary = {}
 
 
@@ -22,6 +22,8 @@ func _ready() -> void:
 
 
 func _on_minute_changed(_hour: int, _minute: int) -> void:
+	if not LoopManager.is_regular_day():
+		return   # jornada especial que deja afuera lo de siempre: no corre
 	var now: int = TimeManager.now_minutes()
 	for event: Dictionary in _events:
 		var id: String = event["id"]

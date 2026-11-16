@@ -1,5 +1,5 @@
 {
-	"_doc": "Diario del ejemplo: una sola categoría y las tres personas.",
+	"_doc": "Diario del ejemplo: una sola categoría, las tres personas y una pregunta (se abre con el diario y se responde al saber del cartero).",
 	"groups": [
 		{
 			"id": "village",
@@ -80,5 +80,19 @@
 	},
 	"zone_parent": {
 		"panaderia": "plaza"
-	}
+	},
+	"questions": [
+		{
+			"id": "who_comes",
+			"text_key": "q_who_comes",
+			"hint_key": "q_who_comes_hint",
+			"answer_key": "q_who_comes_answer",
+			"opens": [
+				"journal_owned"
+			],
+			"answered_by": [
+				"tomas_exists"
+			]
+		}
+	]
 }

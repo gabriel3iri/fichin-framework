@@ -39,7 +39,7 @@ func interact() -> void:
 ## Cruza la puerta (si no hay una cerradura de por medio, data/locks.json).
 func enter() -> void:
 	if ChatterSystem.intercept():
-		return   # alguien llama justo ahora (Klara golpea): se queda
+		return   # alguien llama justo ahora (golpean la puerta): se queda
 	var closed: Array = DoorLocks.closed_message(ZoneManager.current_zone, target_zone)
 	if not closed.is_empty():
 		AudioManager.play_sfx("door_close", -8.0)

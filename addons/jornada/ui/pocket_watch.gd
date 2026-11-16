@@ -1,6 +1,6 @@
 class_name PocketWatch
 extends Control
-## Reloj de bolsillo analógico (canon 09: PocketWatchHUD). La esfera es un sprite; las agujas se
+## Reloj de bolsillo analógico. La esfera es un sprite; las agujas se
 ## dibujan pixel a pixel (Bresenham) para que queden nítidas. Desde las 17:40 se ponen rojas.
 
 const FACE: Texture2D = preload("res://addons/jornada/ui/skin/ui_watch.png")

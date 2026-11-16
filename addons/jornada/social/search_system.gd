@@ -63,6 +63,8 @@ func _on_quick_state_applied() -> void:
 
 # ── Hitos ────────────────────────────────────────────────────────────────────
 func _on_minute_changed(_hour: int, _minute: int) -> void:
+	if not LoopManager.is_regular_day():
+		return   # jornada especial que deja afuera lo de siempre: no corre
 	var now: int = TimeManager.now_minutes()
 	if _resume_level > 0 and _job.is_empty() and not DialogueManager.is_active and _begin(_resume_level, true):
 		_resume_level = 0
@@ -273,8 +275,8 @@ func _knock(seeker: NpcActor) -> void:
 
 func _finish(seeker: NpcActor, level: int) -> void:
 	var rule: Dictionary = _cfg.get("third_warning", {})
-	if level >= 3 and LoopManager.loop_number >= int(rule.get("loop_min", 2)):
-		GameManager.add_suspicion(int(rule.get("suspicion", 0)))   # la tercera vez, desde el segundo día, informa
+	if level >= 3 and GameConfig.unlocked(rule.get("from", rule.get("loop_min", 1))):
+		GameManager.add_suspicion(int(rule.get("suspicion", 0)))   # la tercera vez informa
 	_job.clear()
 	if not DialogueManager.start(_cfg["npc"], _cfg["entry"]):
 		DialogueManager.context = {}

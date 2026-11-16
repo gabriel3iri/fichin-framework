@@ -58,5 +58,20 @@
 		"known_from_start": {
 			"marta": "full"
 		}
+	},
+	"special_days": {
+		"_doc": "Jornadas especiales (LoopManager.special_day): la feria del domingo. El juego la pide con LoopManager.next_special_day antes de terminar la jornada; ese día tiene su fecha, su horario (09:00 a 12:00), sus horarios y diálogos (data/feria) y un tinte. hide_regular: quien no tiene horario en data/feria no aparece.",
+		"feria": {
+			"date": "1952-04-20",
+			"start": "09:00",
+			"end": "12:00",
+			"data_dir": "res://data/feria",
+			"hide_regular": true,
+			"tint": [
+				1.0,
+				0.95,
+				0.85
+			]
+		}
 	}
 }

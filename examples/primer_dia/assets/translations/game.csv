@@ -68,3 +68,7 @@
 "desc_lucia_cat_found","El cartero lo vio en su ruta. Hay que decírselo a Lucía.","",""
 "zone_plaza","Plaza","",""
 "zone_panaderia","Panadería","",""
+"dlg_marta_feria","Hoy es la feria y no se amasa: se vende en la plaza. Vaya a ver los puestos, que hoy no lo necesito.","",""
+"q_who_comes","¿Quién pasa por la panadería?","",""
+"q_who_comes_hint","Doña Marta conoce a todos: preguntarle.","",""
+"q_who_comes_answer","Tomás, el cartero, pasa cada mañana.","",""

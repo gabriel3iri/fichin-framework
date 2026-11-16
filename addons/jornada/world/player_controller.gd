@@ -4,7 +4,7 @@ extends CharacterBody2D
 
 signal direction_changed(direction: Vector2)
 
-## Canon 09 §3: 5 unidades por segundo real (1 unidad = 1 tile = 16 px). Correr cuesta sospecha.
+## 5 unidades por segundo real (1 unidad = 1 tile = 16 px). Correr cuesta sospecha.
 @export var walk_speed: float = 80.0
 ## Por debajo de esto (px por cuadro de física) un eje no se mueve: es el empuje de la colisión, no un paso.
 const MIN_STEP: float = 0.25
@@ -21,7 +21,7 @@ var seated: bool = false
 ## El asiento donde está sentado (Seat): E llama desde ahí al que atiende.
 var seat: Node = null
 ## Cuánto se corre el dibujo al sentarse (cuadro de sentado de CharacterFrames; negativo lo sube al asiento).
-const SIT_DROP: float = -4.0
+const SIT_DROP: float = -1.0
 var _seat_px: Vector2 = Vector2.ZERO
 ## Lo que lleva en la mano (una jarra en el bar): un dibujo chico que sigue a la mano según hacia dónde mira.
 var _held: Sprite2D
@@ -35,6 +35,15 @@ var _interactable: Node = null
 var _run_seconds: float = 0.0
 @onready var _camera: PlayerCamera = get_node_or_null("Camera2D") as PlayerCamera
 
+## Lo lleva otro sistema (EscortSystem en modo guiado): camina solo por la grilla hacia donde le digan (guide_to), no
+## toma las teclas de moverse ni la E (salvo para pasar las líneas de una charla). Las puertas las cruza quien lo lleva.
+var guided: bool = false
+var _guide_clock: float = -1.0   # la hora del reloj en el paso guiado anterior (_guided_seconds)
+## Guiado, cuánto más arriba del borde de la celda pisa (guide_to).
+const GUIDE_LIFT: float = 3.0
+var _guide_path: PackedVector2Array = PackedVector2Array()
+var _guide_stop: float = 0.0
+
 
 func _ready() -> void:
 	# Se dibuja donde está (sin interpolar entre pasos de física): la cámara lo sigue exacto y nada tiembla.
@@ -47,7 +56,7 @@ func _ready() -> void:
 	DialogueManager.dialogue_ended.connect(_on_dialogue_ended)
 	LoopManager.knowledge_gained.connect(_on_knowledge_gained)
 	WorkManager.task_completed.connect(_on_task_completed)
-	# Cada loop recarga la escena: el técnico que aparece a las 06:00 es el que despierta (el aviso de loop_started
+	# Cada loop recarga la escena: el jugador que aparece al empezar es el que despierta (el aviso de loop_started
 	# llega antes de recargar, al jugador anterior).
 	_wake_up.call_deferred()
 
@@ -73,7 +82,7 @@ func thought_text() -> String:
 
 ## Al despertar (data/game.json "thoughts"): una frase fija por jornada mientras dure "wake_first" y después una al
 ## azar de "wake_later" sin repetir la anterior. "journal_kept": la primera vez que se despierta con el diario lleno,
-## desde la jornada "journal_kept_from" (en un loop, la sorpresa de que la libreta no se borró). Recién despierto se
+## desde la jornada "journal_kept_from" (en un juego de bucle, la sorpresa de que el diario no se borró). Recién despierto se
 ## queda quieto WAKE_PAUSE segundos y entonces piensa.
 const WAKE_PAUSE: float = 1.0
 var _last_wake: String = ""
@@ -157,8 +166,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return   # recién despierto no toca nada todavía
 	if DialogueManager.is_active:
 		DialogueManager.advance()  # no hace nada si hay opciones: se eligen con 1-9
+	elif guided:
+		return   # lo llevan: no toca nada en el camino
 	elif is_instance_valid(_interactable) and ChatterSystem.intercept():
-		pass   # primero habla quien tenía que hablar (Klara golpea antes de que agarre el diario)
+		pass   # primero habla quien tenía que hablar (alguien golpea antes de que agarre el diario)
 	elif is_instance_valid(_interactable):
 		_interactable.interact()
 	elif seated and is_instance_valid(seat) and seat.has_method("call_service"):
@@ -237,7 +248,7 @@ func _place_held() -> void:
 	if view == "side" and facing.x < 0.0:
 		hand.x = -hand.x
 	if seated:
-		hand.y += SIT_DROP + 5.0   # el cuadro de sentado baja el cuerpo 5 px (pixel/sit.py) y el dibujo sube SIT_DROP
+		hand.y += SIT_DROP + 2.0   # el cuadro de sentado baja el cuerpo 2 px (pixel/sit.py, DROP) y el dibujo sube SIT_DROP
 	_held.position = hand
 	_held.z_index = 1
 
@@ -272,7 +283,7 @@ func _physics_process(delta: float) -> void:
 	if seated:
 		if global_position != _seat_px:
 			stand()   # lo movió otro sistema (fundido, traslado): ya no está en el banco
-		elif can_move and not DialogueManager.is_active and Input.get_vector("move_left", "move_right", "move_up", "move_down") != Vector2.ZERO:
+		elif can_move and not DialogueManager.is_active and not Journal.is_open and (guided or Input.get_vector("move_left", "move_right", "move_up", "move_down") != Vector2.ZERO):
 			stand()
 		else:
 			Stamina.step(delta, false, false)   # sentado descansa
@@ -280,33 +291,45 @@ func _physics_process(delta: float) -> void:
 			return
 	_update_interactable()
 	var input_dir: Vector2 = Vector2.ZERO
-	if can_move and not DialogueManager.is_active:   # mientras alguien le habla no se va, venga de donde venga el control
-		input_dir = Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	# Guiado, lo que camina sale del reloj del juego (como los NPC): a la misma hora, en el mismo punto detrás de quien lo
+	# lleva, aunque los cuadros duren distinto (día de la marmota).
+	var guided_step: float = walk_speed * Stamina.walk_factor() * _guided_seconds() if guided else 0.0
+	if can_move and not DialogueManager.is_active and not Journal.is_open:   # ni mientras le hablan ni con el diario abierto
+		input_dir = _guided_direction(guided_step) if guided else Input.get_vector("move_left", "move_right", "move_up", "move_down")
 	var moving: bool = input_dir != Vector2.ZERO
-	var running: bool = moving and Input.is_action_pressed("run") and Stamina.can_run()   # sin energía no corre
+	var running: bool = moving and not guided and Input.is_action_pressed("run") and Stamina.can_run()   # sin energía no corre
 	var speed: float = run_speed if running else walk_speed * Stamina.walk_factor()
+	if guided:
+		speed = guided_step / delta if delta > 0.0 else 0.0
+	else:
+		_guide_clock = -1.0
 	velocity = input_dir * speed
 	var before: Vector2 = global_position
 	move_and_slide()
 	# Contra una pared la física lo empuja y lo devuelve unas centésimas de píxel por cuadro: la cámara lo seguía y
-	# temblaba. Un eje que se movió menos de un cuarto de píxel no se movió.
+	# temblaba. Un eje que se movió menos de un cuarto de píxel no se movió. Guiado no: ahí las correcciones chicas
+	# son las que lo vuelven al centro del camino (sin ellas quedaba rozando una esquina, trabado).
 	var moved: Vector2 = global_position - before
-	if absf(moved.x) < MIN_STEP:
-		moved.x = 0.0
-	if absf(moved.y) < MIN_STEP:
-		moved.y = 0.0
+	if not guided:
+		if absf(moved.x) < MIN_STEP:
+			moved.x = 0.0
+		if absf(moved.y) < MIN_STEP:
+			moved.y = 0.0
 	global_position = before + moved
 	Stamina.step(delta, moving, running)
 	_track_running(delta, running)
 
 	if input_dir != Vector2.ZERO:
 		# En diagonal mira en diagonal (el protagonista tiene vistas de tres cuartos, ver CharacterFrames).
-		var new_facing: Vector2 = input_dir
+		var new_facing: Vector2 = input_dir.normalized() if guided else input_dir
 		if new_facing != facing:
 			facing = new_facing
 			direction_changed.emit(facing)
 	# Se anima con el desplazamiento real: contra una pared la caminata se detiene.
-	CharacterFrames.apply(_sprite, facing, moved.length() / delta, running)
+	var anim_speed: float = moved.length() / delta
+	if guided and is_guide_walking() and TimeManager.world() == TimeManager.World.CLOCK:
+		anim_speed = walk_speed   # el reloj avanza una vez por cuadro: entre medio no parpadea a quieto
+	CharacterFrames.apply(_sprite, facing, anim_speed, running)
 
 
 ## Un paso en cada cuadro de contacto del ciclo (0 y 2), con el sonido del suelo que se pisa.
@@ -315,7 +338,7 @@ func _on_frame_changed() -> void:
 		AudioManager.play_footstep(ZoneManager.surface_at(global_position))
 
 
-## Canon 09 §2.2: correr en público sube 1 punto de sospecha cada 10 segundos.
+## Correr en público sube 1 punto de sospecha cada 10 segundos.
 func _track_running(delta: float, running: bool) -> void:
 	if not running:
 		_run_seconds = 0.0
@@ -360,6 +383,50 @@ func freeze(seconds: float) -> void:
 	await get_tree().create_timer(seconds, false).timeout
 	if not DialogueManager.is_active:
 		can_move = true
+
+
+## Camina solo hasta `px` de la zona actual por la grilla de caminos y se frena a `stop_px` del final (detrás de quien
+## sigue, sin pisarle los talones). Solo con `guided`.
+## Los puntos del camino son los pies en el borde de abajo de cada celda: el cuerpo, justo ahí, roza la fila de abajo
+## y se trababa contra una esquina. Camina unos píxeles más arriba, adentro de la celda.
+func guide_to(px: Vector2, stop_px: float = 2.0) -> void:
+	_guide_path = ZoneManager.find_path(ZoneManager.current_zone, global_position, px)
+	for i: int in _guide_path.size():
+		_guide_path[i] += Vector2(0.0, -GUIDE_LIFT)
+	_guide_stop = stop_px
+
+
+## Segundos de juego que pasaron desde el paso anterior guiado (0 con el reloj frenado).
+func _guided_seconds() -> float:
+	if TimeManager.world() != TimeManager.World.CLOCK:
+		_guide_clock = -1.0
+		return get_physics_process_delta_time()   # reloj parado por otra cosa (una prueba): en tiempo real
+	var seconds: float = TimeManager.seconds_since(_guide_clock) if _guide_clock >= 0.0 else 0.0
+	_guide_clock = TimeManager.minutes
+	return seconds
+
+
+func stop_guide() -> void:
+	_guide_path.clear()
+
+
+## ¿Le queda camino por hacer?
+func is_guide_walking() -> bool:
+	return not _guide_path.is_empty()
+
+
+## Hacia el próximo punto del camino. `step` es lo que avanza en este cuadro: si el punto queda más cerca, llega justo
+## a él en vez de pasarse (acelerado, un paso mide varios píxeles: se comía las esquinas y rozaba la pared).
+func _guided_direction(step: float) -> Vector2:
+	if _guide_path.is_empty() or global_position.distance_to(_guide_path[_guide_path.size() - 1]) <= maxf(_guide_stop, 2.0):
+		_guide_path.clear()
+		return Vector2.ZERO
+	while _guide_path.size() > 1 and global_position.distance_to(_guide_path[0]) <= 1.0:
+		_guide_path.remove_at(0)
+	var to: Vector2 = _guide_path[0] - global_position
+	if step > 0.0 and to.length() < step:
+		return to / step
+	return to.normalized()
 
 
 func _on_dialogue_started(_npc_id: String) -> void:

@@ -204,7 +204,7 @@ func _refresh_work() -> void:
 	var has_order: bool = WorkManager.has_order()
 	_work_chip.visible = has_order and not _in_dialogue   # el reloj y los flags también pasan durante una charla
 	if has_order:
-		# Con la entrega a la vista (Klara la dice al darle la orden) el plazo se siente: en la última hora, en rojo.
+		# Con la entrega a la vista (quien da la orden la dice) el plazo se siente: en la última hora, en rojo.
 		if not WorkManager.has_deadline:   # un juego sin plazo muestra solo el avance
 			_work_label.text = tr("hud_work") % [WorkManager.completed_count(), WorkManager.tasks.size()]
 			_work_label.add_theme_color_override("font_color", UiStyle.TEXT)

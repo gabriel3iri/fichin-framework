@@ -1,5 +1,5 @@
 extends Node
-## Reproduce los diálogos de data/dialogue/<npc_id>.json (canon 08).
+## Reproduce los diálogos de data/dialogue/<npc_id>.json.
 ##
 ## Una entrada = una línea (<=3 frases). Se encadenan con "next". Los puntos de entrada
 ## ("entry": true) se eligen por prioridad entre los que cumplen su condición.
@@ -12,6 +12,7 @@ signal dialogue_ended(npc_id: String)
 ## La caja pide completar el texto que se está escribiendo (en vez de avanzar).
 signal skip_typing_requested
 
+const Daily := preload("res://addons/jornada/core/daily.gd")
 const DIALOGUE_DIR: String = "res://data/dialogue/"
 
 var is_active: bool = false
@@ -26,7 +27,7 @@ var _entry_points: Array = []
 var _current: Dictionary = {}
 var _visible_options: Array = []       # opciones disponibles de la línea actual
 var _seen_this_loop: Dictionary = {}   # "npc/entrada" -> true
-var _cache: Dictionary = {}            # npc_id -> datos parseados
+var _cache: Dictionary = {}            # ruta del diálogo -> datos parseados
 var _noting: bool = false              # último paso: "Anotar en el diario"
 # Al final de cada charla con una persona: preguntarle el nombre o preguntarle por otra gente (los nombres se aprenden,
 # JournalManager.names). "" | "menu" | "pick" | "reply".
@@ -59,7 +60,7 @@ var _snubbed: Dictionary = {}          # npc -> true: no le habla más en este l
 var _aside: String = ""                # tras una frase suelta: "back" vuelve a las opciones, "end" cierra, "entry:<id>" sigue ahí
 var _name_refused: Dictionary = {}    # persona -> true: ya se negó a decir su nombre en este loop
 var _inline_people: bool = false       # esta charla ya ofreció «¿cómo se llama?» entre sus opciones: no hay menú al final
-## «¿Usted es Erna?» (Identification): con un nombre puesto en la ficha de quien tiene enfrente, se le puede preguntar
+## «¿Usted es Marta?» (Identification): con un nombre puesto en la ficha de quien tiene enfrente, se le puede preguntar
 ## una vez por loop. Si acierta, el dato queda confirmado y sube la confianza; si no, queda tachado en su ficha y la
 ## reacción depende del lazo con la verdadera dueña del nombre (data/relations.json, `wrong_name` de cada tipo):
 ##   "snub"    se ofende: la confianza va al mínimo y no le habla más hasta el día siguiente (rivales, rencores)
@@ -69,12 +70,71 @@ var _inline_people: bool = false       # esta charla ya ofreció «¿cómo se ll
 var _guessed: Dictionary = {}          # persona -> true: ya se le preguntó si es tal en este loop
 
 
+## Despedida por esperar (data/game.json "dialogue.idle_seconds"): con el reloj andando en las charlas
+## (GameManager.clock_runs_in_dialogue), si hay opciones y el jugador no elige en ese rato, quien habla se cansa, se
+## despide (dlg_idle_dismiss[_<npc>|_<voz>], con variantes _1, _2...) y se va; los objetos se cierran en silencio. Con el
+## reloj frenado en la charla no corre: esperar no le quita tiempo a nadie.
+const IDLE_CLOSE_HOLD: float = 1.6     # segundos que queda la despedida a la vista antes de cerrar
+var _idle_left: float = -1.0
+var _idle_closing: float = -1.0
+
+
 func _ready() -> void:
 	LoopManager.loop_started.connect(func(_n: int) -> void: _reset_loop())
 	LoopManager.game_reset.connect(_reset_loop)
 
 
+## Segundos sin elegir antes de que se canse (0: nunca).
+func idle_limit() -> float:
+	if not GameManager.clock_runs_in_dialogue():
+		return 0.0
+	return float(GameConfig.value("dialogue.idle_seconds", 0))
+
+
+func _process(delta: float) -> void:
+	if not is_active:
+		return
+	if _idle_closing >= 0.0:
+		if text_revealing:
+			return
+		_idle_closing -= delta
+		if _idle_closing <= 0.0:
+			_idle_close()
+		return
+	var limit: float = idle_limit()
+	if limit <= 0.0 or not has_options or text_revealing or _noting or _people_step != "":
+		_idle_left = -1.0
+		return
+	if _idle_left < 0.0:
+		_idle_left = limit
+	_idle_left -= delta
+	if _idle_left <= 0.0:
+		_idle_dismiss()
+
+
+func _idle_dismiss() -> void:
+	_idle_left = -1.0
+	if _npc_id.begins_with("obj_"):
+		abort()
+		return
+	_people_step = ""
+	_people_done = true
+	_visible_options = []
+	has_options = false
+	_idle_closing = IDLE_CLOSE_HOLD
+	line_shown.emit(_speaker, _own_line("dlg_idle_dismiss", _npc_id), "", [], false)
+
+
+## Cierra después de la despedida: lo aprendido se anota igual, sin la tarjeta de anotar ni el menú de nombres.
+func _idle_close() -> void:
+	_idle_closing = -1.0
+	_noting = true
+	Toasts.commit_notes()
+	_end()
+
+
 func _reset_loop() -> void:
+	abort()   # ninguna charla pasa al día siguiente: una que quedó abierta frenaría el reloj y al jugador
 	_seen_this_loop.clear()
 	_asked.clear()
 	_answered.clear()
@@ -122,13 +182,15 @@ func start(npc_id: String, entry_id: String = "") -> bool:
 	if entry_id != "" or first.get("no_small_talk", false):
 		_people_done = true
 	is_active = true
+	_idle_left = -1.0
+	_idle_closing = -1.0
 	GameManager.sync_day_clock()   # la charla no gasta minutos del día
 	dialogue_started.emit(npc_id)
 	_show(first)
 	return true
 
 
-## Quién habla ahora (como lo nombra el técnico, o el objeto que se mira); "" si no hay charla.
+## Quién habla ahora (como lo nombra el jugador, o el objeto que se mira); "" si no hay charla.
 func speaker() -> String:
 	return _speaker if is_active else ""
 
@@ -139,11 +201,9 @@ func entry_ids(npc_id: String) -> Array:
 	return data.get("by_id", {}).keys()
 
 
-## El jugador no eligió: el NPC se despide y se cierra la caja.
-## Los objetos examinables (obj_*) cierran en silencio: no hablan.
 ## ¿Tiene archivo de diálogo? Los extras y los pasajeros no: contestan con ChatterSystem.brush_off.
 func has_dialogue(npc_id: String) -> bool:
-	return _cache.has(npc_id) or FileAccess.file_exists(DIALOGUE_DIR + npc_id + ".json")
+	return FileAccess.file_exists(LoopManager.data_file("dialogue", npc_id, DIALOGUE_DIR + npc_id + ".json"))
 
 
 ## ¿Habría algo que decir ahora? Lo usan los objetos examinables para mostrar (o no) el aviso [E].
@@ -158,6 +218,8 @@ func can_start(npc_id: String) -> bool:
 func abort() -> void:
 	if not is_active:
 		return
+	_idle_closing = -1.0
+	_idle_left = -1.0
 	_people_done = true   # sin menú de nombres ni "anotar": se corta ya
 	_people_step = ""
 	_noting = true
@@ -171,6 +233,9 @@ func advance() -> void:
 		return
 	if text_revealing:
 		skip_typing_requested.emit()
+		return
+	if _idle_closing >= 0.0:
+		_idle_close()   # se despidió: el jugador confirma y se cierra ya
 		return
 	if _aside != "":
 		var then: String = _aside
@@ -207,6 +272,7 @@ func advance() -> void:
 func choose(index: int) -> void:
 	if not is_active or not has_options or text_revealing or index < 0 or index >= _visible_options.size():
 		return
+	_idle_left = -1.0
 	if _noting:
 		Toasts.commit_notes()
 		_end()
@@ -234,6 +300,7 @@ func choose(index: int) -> void:
 
 func _show(entry: Dictionary) -> void:
 	_current = entry
+	_idle_left = -1.0
 	_seen_this_loop["%s/%s" % [_npc_id, entry["id"]]] = true
 	line_discovers = _discovering or _discovers(entry.get("reveals", []))
 	_discovering = false
@@ -245,7 +312,7 @@ func _show(entry: Dictionary) -> void:
 		var bits: Dictionary = {"first": JournalManager.FIRST, "last": JournalManager.LAST, "full": JournalManager.FULL}
 		JournalManager.learn_name(_person, int(bits.get(learns, 0)))
 		_speaker = Identification.shown_name(_person)
-	# "names": {npc: first|last|full}: en esta línea nombra a otro (Ilse habla de su patrón); el técnico lo aprende.
+	# "names": {npc: first|last|full}: en esta línea nombra a otro (habla de su patrón); el jugador lo aprende.
 	var named: Dictionary = entry.get("names", {})
 	for npc_id: String in named:
 		var pid: String = JournalManager.person_for_dialogue(npc_id)
@@ -281,7 +348,9 @@ func _emit(entry: Dictionary) -> void:
 	if not context.is_empty():
 		text = text.format(context)
 	Identification.hear_text(text)   # lo que le dicen de frente se anota solo (la caja lo resalta)
-	line_shown.emit(_speaker, text, sd, labels, entry.get("next", "") != "")
+	# "speaker_key": esta línea la dice otro (una escena con varios, como una votación); si no, quien tiene el diálogo.
+	var who: String = tr(entry["speaker_key"]) if entry.has("speaker_key") else _speaker
+	line_shown.emit(who, text, sd, labels, entry.get("next", "") != "")
 
 
 ## Las opciones de una entrada: las suyas o, con "options_of": "<entrada>", las de esa (el saludo de cada mañana ofrece
@@ -350,7 +419,11 @@ func snub_line(npc_id: String) -> String:
 
 
 func _repeat_line(stage: String, npc_id: String) -> String:
-	var base: String = ("bark_repeat_" if stage == "snub" else "dlg_repeat_") + stage
+	return _own_line(("bark_repeat_" if stage == "snub" else "dlg_repeat_") + stage, npc_id)
+
+
+## La frase `base` de quien habla: la suya (`<base>_<npc>`), la de su voz (`<base>_<voz>`) o la general, con variantes.
+func _own_line(base: String, npc_id: String) -> String:
 	var bases: Array[String] = ["%s_%s" % [base, npc_id]]
 	var person: String = JournalManager.person_for_dialogue(npc_id)
 	var voice: String = Relations.voice(person) if person != "" else ""
@@ -409,9 +482,9 @@ func _people_questions() -> Array:
 	if not guess.is_empty() and JournalManager.names_allowed() and not _guessed.has(_person):
 		var label_key: String = "ui_people_ask_guess_" + String(Identification.field(guess[0]).get("journal_bit", ""))
 		out.append({"id": "guess", "label": tr(label_key) % Identification.option_text(guess[0], guess[1])})
-	# Antes de from_loop (data/relations.json) nadie habla de nadie: ni se ofrece la pregunta.
+	# Antes de `from` (data/relations.json) nadie habla de nadie: ni se ofrece la pregunta.
 	if not GameConfig.in_group("outsiders", _npc_id) and not _refused and not _people_candidates().is_empty() \
-			and not (Relations.enabled() and LoopManager.loop_number < Relations.from_loop()):
+			and not (Relations.enabled() and not Relations.open()):
 		out.append({"id": "ask", "label": tr("ui_people_ask_about")})
 	return out
 
@@ -430,7 +503,7 @@ func _people_candidates() -> Array[String]:
 
 
 ## Por cuántos vecinos le contesta en este loop, según la confianza: data/relations.json "allowance" (uno por nivel,
-## desde 0; en Rabenholz 1, 1, 2, 2). Sin esa lista, uno más uno por nivel.
+## desde 0; p. ej. 1, 1, 2, 2). Sin esa lista, uno más uno por nivel.
 func _people_allowance() -> int:
 	var level: int = 0
 	for n in [3, 2, 1]:
@@ -463,7 +536,7 @@ func _choose_people(option: Dictionary) -> void:
 			_people_step = ""
 			_end()
 		"name":
-			# data/game.json "people.keeps_name": no lo da (el de la cuatro); se lo pregunta igual, pero no aprende nada.
+			# data/game.json "people.keeps_name": no lo da; se lo pregunta igual, pero no aprende nada.
 			if GameConfig.in_group("keeps_name", _person):
 				_name_refused[_person] = true
 				_people_reply(_pick_line(["dlg_people_myname_refuse_" + _person, "dlg_people_myname_refuse"]))
@@ -477,7 +550,7 @@ func _choose_people(option: Dictionary) -> void:
 			var gate: Dictionary = _gate()
 			if not gate.is_empty():
 				# Todavía no habla de los vecinos (primer día, sin la segunda cerveza, sin haberlo escuchado...). Con
-				# "entry", la charla sigue por ahí (Hanns le ofrece otra); si no, por hoy no se le vuelve a preguntar.
+				# "entry", la charla sigue por ahí (le ofrece otra cerveza); si no, por hoy no se le vuelve a preguntar.
 				var then: String = String(gate.get("entry", ""))
 				if then != "" and _entries.has(then):
 					_people_then = then
@@ -488,7 +561,7 @@ func _choose_people(option: Dictionary) -> void:
 			if int(_asked.get(_person, 0)) >= _people_allowance():
 				# Ya contó lo que estaba dispuesto a contar: sin más confianza no habla de los vecinos.
 				_refused = true
-				var key: String = "dlg_people_refuse_kid" if GameConfig.in_group("kids", _person) else "dlg_people_refuse_%d" % randi_range(1, REFUSALS)
+				var key: String = "dlg_people_refuse_kid" if GameConfig.in_group("kids", _person) else "dlg_people_refuse_%d" % (1 + Daily.index(_npc_id + "|" + _person, REFUSALS))
 				var refusals: Array[String] = ["dlg_people_refuse_" + _person, key]   # la propia, si tiene
 				_people_reply(_pick_line(refusals))
 				return
@@ -510,7 +583,7 @@ func _choose_people(option: Dictionary) -> void:
 				_tell_about(pid)
 
 
-## «¿Usted es Erna?»: contesta según sea o no, y según el lazo con quien sí lo es.
+## «¿Usted es Marta?»: contesta según sea o no, y según el lazo con quien sí lo es.
 func _guess_name() -> void:
 	var guess: Array = Identification.askable_guess(_person)
 	if guess.is_empty():
@@ -576,12 +649,12 @@ func _guess_line(what: String, other: String = "") -> String:
 func _gate() -> Dictionary:
 	if not Relations.enabled():
 		return {}
-	if LoopManager.loop_number < Relations.from_loop():
-		return {"refuse": "dlg_people_refuse_kid" if GameConfig.in_group("kids", _person) else "dlg_people_early_%d" % randi_range(1, EARLY_REFUSALS)}
+	if not Relations.open():
+		return {"refuse": "dlg_people_refuse_kid" if GameConfig.in_group("kids", _person) else "dlg_people_early_%d" % (1 + Daily.index(_npc_id + "|" + _person, EARLY_REFUSALS))}
 	return Relations.gate(_person, ZoneManager.current_zone)
 
 
-## Qué sabe ya el técnico de alguien, en capas: 0 nada, 1 qué hace, 2 un nombre, 3 nombre completo.
+## Qué sabe ya el jugador de alguien, en capas: 0 nada, 1 qué hace, 2 un nombre, 3 nombre completo.
 func _layer(pid: String) -> int:
 	var bits: int = JournalManager.name_bits(pid)
 	if bits == JournalManager.FULL:
@@ -591,7 +664,7 @@ func _layer(pid: String) -> int:
 	return 1 if pid in JournalManager.roles_heard else 0
 
 
-## Contesta por alguien según data/relations.json: lo que sabe de él (depth), el lazo que los une y lo que el técnico ya
+## Contesta por alguien según data/relations.json: lo que sabe de él (depth), el lazo que los une y lo que el jugador ya
 ## sabe. Cada respuesta da la capa siguiente (qué hace, después un nombre, después el nombre completo); un lazo puede
 ## dar más de una de golpe, menos, o hacerlo esquivar, y anteponer lo que piensa del otro. Las frases salen de
 ## _about_line: cada una en la voz de quien contesta y, si el juego las tiene, propias de la persona por la que se pregunta.
@@ -670,7 +743,7 @@ func _learn_a_name(pid: String, tie_type: String = "") -> String:
 ##   dlg_people_<kind>_<voz>             la frase de esa voz, con el dato en %s
 ##   dlg_people_<kind>                   la frase genérica, con el dato en %s
 ## La voz de cada uno la da data/relations.json ("voices"). El dato es qué hace (en minúscula), el nombre, el
-## apellido ("el alcalde Brandt") o el nombre completo; una frase propia puede decirlo con sus palabras, sin %s.
+## apellido ("el alcalde Ruiz") o el nombre completo; una frase propia puede decirlo con sus palabras, sin %s.
 func _about_line(kind: String, pid: String, tie_type: String = "") -> String:
 	var voice: String = Relations.voice(_person)
 	var bases: Array[String] = ["rel_%s_%s_%s" % [kind, pid, _person]]
@@ -733,7 +806,7 @@ func _pick_line(bases: Array[String]) -> String:
 		if found.is_empty() and tr(base) != base:
 			found.append(tr(base))
 		if not found.is_empty():
-			return found[randi() % found.size()]
+			return found[Daily.index(_npc_id + "|" + base, found.size())]   # la misma cada jornada
 	return ""
 
 
@@ -789,11 +862,11 @@ func _conditions_met(cond: Dictionary) -> bool:
 		return false
 	if GameManager.suspicion > cond.get("suspicion_max", 100):
 		return false
-	# "zones": solo en esos lugares (p. ej. la charla larga de la jefa de estación, en la estación y no en la posada).
+	# "zones": solo en esos lugares (p. ej. una charla larga, en su trabajo y no en la calle).
 	var zones: Array = cond.get("zones", [])
 	if not zones.is_empty() and not ZoneManager.current_zone in zones:
 		return false
-	# "absent": solo si esas personas no están en la zona del jugador (la valija del de la cuatro, cuando él no está).
+	# "absent": solo si esas personas no están en la zona del jugador (revisar sus cosas cuando no está).
 	for npc_id: String in cond.get("absent", []):
 		if _present_here(npc_id):
 			return false
@@ -801,7 +874,7 @@ func _conditions_met(cond: Dictionary) -> bool:
 	var tasks: int = WorkManager.completed_count()
 	if tasks < cond.get("tasks_min", 0) or tasks > cond.get("tasks_max", 9999):
 		return false
-	return _energy_ok(cond) and _time_ok(cond) and _names_ok(cond) and _seen_ok(cond) and _watch_ok(cond) and _knowledge_ok(cond.get("knowledge", []), cond.get("knowledge_any", []), cond.get("not_knowledge", []))
+	return _energy_ok(cond) and _time_ok(cond) and _names_ok(cond) and _seen_ok(cond) and _visited_ok(cond) and _identified_ok(cond) and _watch_ok(cond) and _knowledge_ok(cond.get("knowledge", []), cond.get("knowledge_any", []), cond.get("not_knowledge", []))
 
 
 func _present_here(npc_id: String) -> bool:
@@ -818,7 +891,7 @@ func _option_available(option: Dictionary) -> bool:
 		return false
 	if LoopManager.loop_number < option.get("loop_min", 1) or LoopManager.loop_number > option.get("loop_max", 9999):
 		return false
-	return _energy_ok(option) and _time_ok(option) and _cost_ok(option) and _names_ok(option) and _seen_ok(option) and _watch_ok(option) and _after_ok(option) and _knowledge_ok(option.get("requires", []), option.get("requires_any", []), option.get("not_requires", []))
+	return _energy_ok(option) and _time_ok(option) and _cost_ok(option) and _names_ok(option) and _seen_ok(option) and _visited_ok(option) and _identified_ok(option) and _watch_ok(option) and _after_ok(option) and _knowledge_ok(option.get("requires", []), option.get("requires_any", []), option.get("not_requires", []))
 
 
 ## "after_today": [clave de opción...] solo si hoy ya le eligió a esta persona alguna de esas opciones (prometer callar
@@ -830,14 +903,28 @@ func _after_ok(rules: Dictionary) -> bool:
 		return _answered.has("%s/%s" % [_npc_id, k]) or _seen_this_loop.has("%s/%s" % [_npc_id, k]))
 
 
-## "seen_today": [npc...] solo si hoy ya se lo cruzó (lo tuvo a la vista): preguntar por el de la cuatro recién después
+## "seen_today": [npc...] solo si hoy ya se lo cruzó (lo tuvo a la vista): preguntar por alguien recién después
 ## de verlo.
 func _seen_ok(rules: Dictionary) -> bool:
 	return (rules.get("seen_today", []) as Array).all(func(npc_id: String) -> bool:
 		return JournalManager.was_seen_today(JournalManager.person_for_dialogue(npc_id)))
 
 
-## "unwatched_by": [npc...] solo si ninguno de ellos está en la zona del jugador (Ilse cuenta lo de la puerta de servicio
+## "visited": [zona...] solo si el jugador ya estuvo en alguno de esos lugares (lo anota el diario: JournalManager.visited).
+## Para preguntar por algo hay que haberlo visto: una puerta del fondo, recién después de pasar por ahí.
+func _visited_ok(rules: Dictionary) -> bool:
+	var zones: Array = rules.get("visited", [])
+	return zones.is_empty() or zones.any(func(zone_id: String) -> bool: return zone_id in JournalManager.visited)
+
+
+## "identified": [ficha...] solo si esas fichas de Identification ya están confirmadas (sellar la ficha de un muerto
+## cambia a su pariente: recién entonces el jugador puede contarle la verdad).
+func _identified_ok(rules: Dictionary) -> bool:
+	return (rules.get("identified", []) as Array).all(func(card_id: String) -> bool:
+		return Identification.is_confirmed(card_id))
+
+
+## "unwatched_by": [npc...] solo si ninguno de ellos está en la zona del jugador (contar algo
 ## en voz baja, sin el patrón a la vista); "watched_by": [npc...], si alguno está (entonces esquiva).
 func _watch_ok(rules: Dictionary) -> bool:
 	var here := func(npc_id: String) -> bool:
@@ -849,8 +936,8 @@ func _watch_ok(rules: Dictionary) -> bool:
 	return watchers.is_empty() or watchers.any(here)
 
 
-## "knows_name": [npc...] solo si el técnico sabe cómo se llama cada uno (alguna parte del nombre): llamar a alguien por
-## su nombre («Franz, qué lindo lugar») recién cuando se lo sabe. "not_knows_name": mientras no se lo sepa.
+## "knows_name": [npc...] solo si el jugador sabe cómo se llama cada uno (alguna parte del nombre): llamar a alguien por
+## su nombre («Marta, qué lindo lugar») recién cuando se lo sabe. "not_knows_name": mientras no se lo sepa.
 func _names_ok(rules: Dictionary) -> bool:
 	var known := func(npc_id: String) -> bool:
 		var pid: String = JournalManager.person_for_dialogue(npc_id)
@@ -896,9 +983,9 @@ func _knowledge_ok(all_of: Array, any_of: Array, none_of: Array) -> bool:
 
 
 func _load_npc(npc_id: String) -> Dictionary:
-	if _cache.has(npc_id):
-		return _cache[npc_id]
-	var path: String = DIALOGUE_DIR + npc_id + ".json"
+	var path: String = LoopManager.data_file("dialogue", npc_id, DIALOGUE_DIR + npc_id + ".json")
+	if _cache.has(path):
+		return _cache[path]
 	if not FileAccess.file_exists(path):
 		push_warning("DialogueManager: no existe %s" % path)
 		return {}
@@ -913,5 +1000,5 @@ func _load_npc(npc_id: String) -> Dictionary:
 		if entry.get("entry", false):
 			entry_points.append(entry)
 	var data: Dictionary = {"name_key": parsed["name_key"], "by_id": by_id, "entry_points": entry_points}
-	_cache[npc_id] = data
+	_cache[path] = data   # por archivo: en una jornada especial la misma persona puede tener otro diálogo
 	return data

@@ -1,7 +1,7 @@
 class_name Weather
 extends CanvasLayer
 ## Clima en pantalla (data/weather.json): niebla de la mañana, llovizna después del almuerzo, aguanieve y la nevada
-## de las 17:47, con el viento empujándola de costado. Es igual en todos los loops: sigue la hora, no el azar.
+## de la tarde (lo que diga data/weather.json), con el viento empujándola de costado. Es igual en todos los loops: sigue la hora, no el azar.
 ## Solo se ve en los exteriores, sobre el mundo y debajo del HUD, con el color de la luz del día (DayLight).
 ## La niebla es un shader sobre la pantalla: jirones de ruido anclados al mundo (no siguen al jugador; el viento
 ## los arrastra) y un desenfoque suave de lo que hay detrás. Lluvia y nieve caen en coordenadas de pantalla.

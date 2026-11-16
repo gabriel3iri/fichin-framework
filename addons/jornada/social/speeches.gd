@@ -4,8 +4,9 @@ extends Node
 ##
 ## - seats: por objeto (el nombre del PNG del prop), los puestos donde sentarse (offsets en px desde el pie del objeto)
 ##   y hacia dónde se mira sentado. Al entrar a una zona se pone un Seat en cada puesto.
-## - speeches: quién habla (npc), dónde (zone), entre qué horas (time_min/time_max, opcionales), qué dice (lines, claves
-##   del CSV, en orden y en ronda) y cada cuántos segundos reales (every). Si el jugador lo escucha sentado
+## - speeches: quién habla (npc), dónde (zone), entre qué horas (time_min/time_max, opcionales), mientras hace qué
+##   (doing, opcional: un "doing" de su horario o una lista; así habla solo desde el púlpito y no al pasar), qué dice
+##   (lines, claves del CSV, en orden y en ronda) y cada cuántos segundos reales (every). Si el jugador lo escucha sentado
 ##   listen_minutes minutos del juego, gana `reveals` y quien habla se acerca a él y abre su diálogo (la entrada que
 ##   elija su propio JSON con esos flags). Habla solo mientras el jugador está en la zona: si no, nadie lo oye.
 ## - service: quien atiende en una zona (el tabernero). Cuando el jugador se sienta, viene y abre su diálogo: a un
@@ -79,8 +80,15 @@ func _speaker(speech: Dictionary) -> NpcActor:
 		return null
 	for node in get_tree().get_nodes_in_group("npc_actors"):
 		if node is NpcActor and node.npc_id == speech["npc"] and node.zone == ZoneManager.current_zone and node.visible:
-			return node
+			return node if _doing_ok(speech, node) else null
 	return null
+
+
+static func _doing_ok(speech: Dictionary, actor: NpcActor) -> bool:
+	if not speech.has("doing"):
+		return true
+	var wanted: Variant = speech["doing"]
+	return actor.doing() in (wanted if wanted is Array else [wanted])
 
 
 func _time_ok(speech: Dictionary) -> bool:

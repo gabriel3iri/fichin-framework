@@ -1,5 +1,5 @@
 extends Node
-## Guardado (canon 09 §13): un solo slot, autoguardado al inicio de cada loop, y F5 / F9 para el
+## Guardado: un solo slot, autoguardado al inicio de cada loop, y F5 / F9 para el
 ## guardado rápido a media jornada. El autoguardado conserva lo que persiste entre loops
 ## (conocimiento, contador de loops, tareas dominadas); el guardado rápido añade el estado del momento.
 
@@ -19,7 +19,7 @@ var _sections: Dictionary = {}
 
 
 ## Un sistema del juego guarda lo suyo con el autoguardado (lo que persiste entre jornadas): `save` devuelve algo que
-## se pueda pasar a JSON y `load` lo recibe al cargar. En Rabenholz, EndingSystem guarda los finales vistos.
+## se pueda pasar a JSON y `load` lo recibe al cargar. Un juego guarda así, p. ej., los finales vistos.
 func register_section(key: String, save: Callable, load: Callable) -> void:
 	_sections[key] = [save, load]
 

@@ -9,7 +9,8 @@ color oscuro del material vecino, no negro. La hoja conserva el formato que lee 
 body: male | female | dog; build: normal | stout | thin; garment: jacket | coat | greatcoat | cassock | apron |
 vest | dress | skirt_coat | labcoat; hat: none | rail_cap | flat_cap | fedora | kepi | scarf | cloche | beret
 hair: short | bald | bun | braids | long | slick; extras: mustache, beard, stubble, glasses, scar, tie,
-briefcase, bag, satchel, collar_up, badge, belt, soot, nose_red, rosary, suitcase, shawl, missing_finger.
+briefcase, bag, satchel, collar_up, badge, belt, soot, nose_red, rosary, suitcase, shawl, missing_finger,
+baby (un bebé envuelto en brazos), bucket (un balde en la mano). garment="apron" es ropa de trabajo con delantal.
 kid: filas que se le quitan (chicos); runs: camina suelto, corre y tiene diagonales (el protagonista).
 """
 
@@ -45,6 +46,8 @@ class Look:
     def __init__(self, d: dict):
         self.d = d
         self.ex = set(d.get("extras", []))
+        if d.get("garment") == "apron":                       # ropa de trabajo: el delantal es la prenda
+            self.ex.add("apron")
         self.mats = {
             "skin": ramp(SKINS[d["skin"]]), "coat": ramp(d["coat"]), "pants": ramp(d["pants"]),
             "shirt": ramp(d["shirt"]), "hair": ramp(d.get("hair_color", "#4A3426")),
@@ -54,6 +57,7 @@ class Look:
             "shawl": ramp(d.get("shawl", "#5E4A3A")), "gold": ramp("#C9A04A"), "glass": ramp("#9FB3C2"),
             "leather": ramp("#5E3A22"), "metal": ramp("#8A8E94"), "white": ramp("#E9E6DA"),
             "waistcoat": ramp(d.get("waistcoat", "#55524C")), "canvas": ramp(d.get("canvas", "#A39A78")),
+            "blanket": ramp(d.get("blanket", "#C9BFA6")),
         }
         self.mats["eye"] = [EYE, EYE, EYE, EYE]
         c = self.mats["coat"]                                  # canaleta de la pana: entre sombra y base
@@ -337,6 +341,11 @@ def _hold(f: Fig, u: int, swing: int) -> None:
     elif "bag" in lk.ex:
         f.rect(x - 1, y + 1, 4, 3, "leather", 1)
         f.px(x, y + 1, "metal", 3)
+    if "bucket" in lk.ex:                                     # balde de madera con aro de hierro, colgando de la mano
+        f.rect(x - 1, y + 1, 4, 4, "leather", 2)
+        f.rect(x - 1, y + 1, 4, 1, "metal", 2)
+        f.rect(x - 1, y + 3, 4, 1, "metal", 1)
+        f.px(x + 2, y + 2, "leather", 1)
     if "satchel" in lk.ex:                                    # bolso de lona cruzado, cuelga en la cadera izquierda
         for i in range(7):
             f.px(4 + i, 14 + u + i, "canvas", 1)
@@ -344,6 +353,22 @@ def _hold(f: Fig, u: int, swing: int) -> None:
         f.rect(10, 20 + u, 4, 1, "canvas", 3)                  # solapa
         f.px(13, 21 + u, "canvas", 1)
         f.px(11, 21 + u, "leather", 2)                         # hebilla
+
+
+def _baby_front(f: Fig, u: int) -> None:
+    """Un bebé envuelto en una manta, en brazos contra el pecho: la cabecita a la izquierda de la pantalla y los
+    antebrazos de quien lo lleva cruzados por debajo."""
+    top = 15 + u
+    f.rect(4, top + 1, 8, 4, "blanket", 2)
+    f.rect(4, top + 1, 8, 1, "blanket", 3)
+    f.rect(11, top + 2, 1, 3, "blanket", 1)
+    f.rect(4, top + 2, 3, 2, "skin", 2)                          # la cara del bebé
+    f.px(4, top + 2, "skin", 3)
+    f.px(5, top + 3, "eye", 0)
+    mat = "shirt" if "sleeves" in f.look.ex else "coat"
+    f.rect(4, top + 5, 8, 1, mat, 2)                             # los antebrazos que lo sostienen
+    f.px(3, top + 5, "skin", 2)
+    f.px(12, top + 5, "skin", 1)
 
 
 def _satchel_back(f: Fig, u: int) -> None:
@@ -534,6 +559,11 @@ def front(look: Look, lift_l: int = 0, lift_r: int = 0, up: bool = False, back: 
     _head_front(f, u, back)
     if not back:
         _hold(f, u, swing)
+        if "baby" in look.ex:
+            _baby_front(f, u)
+    elif "baby" in look.ex:                                    # de espaldas asoma la manta por los costados
+        f.rect(3, 16 + u, 1, 3, "blanket", 1)
+        f.rect(12, 16 + u, 1, 3, "blanket", 1)
     elif "satchel" in look.ex:
         _satchel_back(f, u)
     return f.image()
@@ -694,6 +724,14 @@ def side(look: Look, back_x: int = 5, front_x: int = 7, lift_l: int = 0, lift_r:
         f.rect(ax - 1, top + 9, 4, 1, "leather", 3)
     elif "bag" in lk.ex:
         f.rect(ax - 1, top + 9, 3, 3, "leather", 1)
+    elif "bucket" in lk.ex:
+        f.rect(ax - 1, top + 9, 4, 4, "leather", 2)
+        f.rect(ax - 1, top + 9, 4, 1, "metal", 2)
+    if "baby" in lk.ex:                                        # el bebé contra el pecho, la cabecita adelante
+        f.rect(x1 - 1, top + 2, 4, 4, "blanket", 2)
+        f.rect(x1 - 1, top + 2, 4, 1, "blanket", 3)
+        f.rect(x1 + 1, top + 2, 2, 2, "skin", 2)
+        f.rect(ax, top + 5, x1 + 2 - ax, 1, mat, 2)            # el antebrazo por debajo
     return f.image()
 
 

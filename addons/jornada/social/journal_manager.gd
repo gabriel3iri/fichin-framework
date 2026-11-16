@@ -1,17 +1,22 @@
 extends Node
-## Estado del diario (canon 09 §6). Lo que el jugador ha anotado fuera de los flags:
+## Estado del diario. Lo que el jugador ha anotado fuera de los flags:
 ## a quién conoció, qué lugares pisó, en qué sitios y a qué horas vio a cada persona, y qué entradas ya leyó.
 ## Persiste entre loops (es memoria del jugador, no del mundo) y se guarda con la partida.
 ##
-## Recordar no es anotar: el técnico recuerda todo lo que averigua (flags, a quién conoció, nombres), pero en el
-## diario solo figura lo que pasó teniéndolo en la mano (GameConfig.flag("has_journal"); en Rabenholz, desde el loop 2). Lo de antes entra
+## Recordar no es anotar: el jugador recuerda todo lo que averigua (flags, a quién conoció, nombres), pero en el
+## diario solo figura lo que pasó teniéndolo en la mano (GameConfig.flag("has_journal")). Lo de antes entra
 ## cuando vuelve a enterarse con el diario, o (lo que sabe de una persona) cuando vuelve a hablar con ella.
 
 signal changed
-## Se escribió en el diario algo que el técnico ya sabía o acaba de averiguar (Toasts avisa).
+## Se escribió en el diario algo que el jugador ya sabía o acaba de averiguar (Toasts avisa).
 signal flag_noted(flag: String)
 ## Aprendió (con el diario encima) una parte del nombre de alguien que no sabía.
 signal name_learned(person_id: String)
+## Se abrió o se respondió una pregunta (data/journal.json "questions") teniendo el diario.
+signal question_changed(question_id: String, answered: bool)
+
+## Estado de una pregunta: todavía no se la hizo, la tiene abierta, ya la respondió.
+enum Question { HIDDEN, OPEN, ANSWERED }
 
 const JOURNAL_PATH: String = "res://data/journal.json"
 ## A esta distancia (en píxeles, cubre la pantalla de 640x360) se considera que el jugador "ve" a un NPC.
@@ -41,12 +46,15 @@ var noted_flags: Array[String] = []
 var noted_people: Dictionary = {}
 ## De dónde salió cada pista anotada: flag -> {"who": quien lo dijo o lo que se miró ("" si se vio), "zone", "time"}.
 var sources: Dictionary = {}
-## Quién no tiene apellido (con el nombre ya se sabe todo, "Padre Simeon") y qué nombres se saben desde el principio
-## (Franz, el dueño del Gasthof): data/game.json, "people".
-## Ya se sorprendió de que el diario conserva lo anotado (loop 3).
+## Quién no tiene apellido (con el nombre ya se sabe todo, "el padre Tomás") y qué nombres se saben desde el principio
+## (la dueña de la posada): data/game.json, "people".
+## Ya se sorprendió de que el diario conserva lo anotado (desde thoughts.journal_kept_from).
 var journal_surprise_done: bool = false
 ## Pasos de la guía del diario ya mostrados (Journal, data/game.json "journal.guide"): on_get, first_clue, first_name.
 var guide_done: Array[String] = []
+
+## Lo último que se avisó de cada pregunta (id -> Question): para avisar solo de lo que cambió.
+var _question_seen: Dictionary = {}
 
 var _people: Array = []
 var _by_id: Dictionary = {}
@@ -70,7 +78,12 @@ func _ready() -> void:
 	LoopManager.knowledge_repeated.connect(_note_flag)
 	TimeManager.minute_changed.connect(_on_minute_changed)
 	ZoneManager.zone_changed.connect(_note_zone)
-	LoopManager.loop_started.connect(func(_n: int) -> void: seen_today.clear())
+	LoopManager.loop_started.connect(func(_n: int) -> void:
+		seen_today.clear()
+		_refresh_questions(false))
+	LoopManager.knowledge_gained.connect(func(_flag: String) -> void: _refresh_questions(true))
+	LoopManager.game_reset.connect(_refresh_questions.bind(false))
+	_refresh_questions(false)
 
 
 func data() -> Dictionary:
@@ -89,7 +102,7 @@ func person_for_dialogue(dialogue_id: String) -> String:
 	if _by_dialogue.has(dialogue_id):
 		return _by_dialogue[dialogue_id]
 	# Golpear la puerta (data/dialogue/door_<persona>.json): es la misma persona; si no, la placa
-	# caería en name_key ("Peter Maurer") aunque todavía no se sepa el nombre.
+	# caería en name_key ("Tomás Gil") aunque todavía no se sepa el nombre.
 	if dialogue_id.begins_with("door_"):
 		var pid: String = dialogue_id.trim_prefix("door_")
 		if _by_id.has(pid):
@@ -123,10 +136,11 @@ func name_bits(person_id: String) -> int:
 	return _complete(person_id, bits)
 
 
-## Desde qué jornada se aprenden nombres (data/game.json "names_from_loop"; en Rabenholz, la 2: el primer día nadie
-## tiene nombre, cada uno es lo que hace). Antes, learn_name anota a la persona pero no el nombre.
+## Desde cuándo se aprenden nombres (data/game.json "names_from": una jornada o un rol/flag, GameConfig.unlocked; p. ej.
+## tener el diario: sin él nadie tiene nombre, cada uno es lo que hace). Antes, learn_name anota a la
+## persona pero no el nombre. "names_from_loop" (número) sigue valiendo si no hay "names_from".
 func names_allowed() -> bool:
-	return LoopManager.loop_number >= int(GameConfig.value("names_from_loop", 1))
+	return GameConfig.unlocked(GameConfig.value("names_from", GameConfig.value("names_from_loop", 1)))
 
 
 func learn_name(person_id: String, bits: int) -> void:
@@ -148,7 +162,7 @@ func learn_role(person_id: String) -> void:
 		changed.emit()
 
 
-## Cómo se lo nombra según lo que recuerda: la descripción, el nombre, el apellido ("el alcalde Brandt") o los dos.
+## Cómo se lo nombra según lo que recuerda: la descripción, el nombre, el apellido ("el alcalde Ruiz") o los dos.
 func display_name(person_id: String) -> String:
 	return _name_for(person_id, name_bits(person_id))
 
@@ -162,7 +176,7 @@ func _name_for(person_id: String, bits: int) -> String:
 	match bits:
 		0: return tr("who_" + person_id)
 		FIRST: return tr("first_" + person_id)
-		LAST: return _capitalized(tr("last_" + person_id))   # "El alcalde Brandt"
+		LAST: return _capitalized(tr("last_" + person_id))   # "El alcalde Ruiz"
 		_: return tr(_by_id.get(person_id, {}).get("name_key", person_id))
 
 
@@ -173,6 +187,46 @@ func _capitalized(text: String) -> String:
 ## Con el nombre de pila de quien no tiene apellido ya se sabe todo.
 func _complete(person_id: String, bits: int) -> int:
 	return FULL if GameConfig.in_group("no_surname", person_id) and bits & FIRST else bits
+
+
+# --- Preguntas ----------------------------------------------------------------------------------------------
+## Lo que el jugador se pregunta (data/journal.json "questions": id, text_key, hint_key, answer_key, opens,
+## answered_by). Sale de lo que sabe, no se guarda: una pregunta se abre con cualquiera de sus `opens` y queda
+## respondida con cualquiera de sus `answered_by`. El juego elige flags que no se olvidan entre jornadas. Como todo
+## el diario, se ve teniéndolo; lo que se preguntó antes aparece cuando lo consigue.
+
+func question_state(question: Dictionary) -> int:
+	var has := func(flag: Variant) -> bool: return LoopManager.has_knowledge(str(flag))
+	if (question.get("answered_by", []) as Array).any(has):
+		return Question.ANSWERED
+	if (question.get("opens", []) as Array).any(has):
+		return Question.OPEN
+	return Question.HIDDEN
+
+
+## Las preguntas que ya se hizo (abiertas o respondidas), en el orden del archivo.
+func questions() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for question: Dictionary in _data.get("questions", []):
+		if question_state(question) != Question.HIDDEN:
+			out.append(question)
+	return out
+
+
+func open_question_count() -> int:
+	return questions().filter(func(q: Dictionary) -> bool: return question_state(q) == Question.OPEN).size()
+
+
+func _refresh_questions(announce: bool) -> void:
+	for question: Dictionary in _data.get("questions", []):
+		var id: String = question.get("id", "")
+		var state: int = question_state(question)
+		var before: int = int(_question_seen.get(id, Question.HIDDEN))
+		_question_seen[id] = state
+		if announce and state > before and has_journal():
+			question_changed.emit(id, state == Question.ANSWERED)
+			Toasts.show_key("ui_question_answered" if state == Question.ANSWERED else "ui_question_opened",
+					[tr(question.get("text_key", ""))])
 
 
 # --- Lo anotado en el diario --------------------------------------------------------------------------------
@@ -220,7 +274,7 @@ func _note_flag(flag: String) -> void:
 	flag_noted.emit(flag)
 
 
-## «Ilse · Gasthof, 09:12»: quién lo dijo (o qué se miró) y dónde; solo el lugar si lo vio el técnico.
+## «Marta · Panadería, 09:12»: quién lo dijo (o qué se miró) y dónde; solo el lugar si lo vio el jugador.
 func source_text(flag: String) -> String:
 	var src: Dictionary = sources.get(flag, {})
 	if src.is_empty():
@@ -289,6 +343,7 @@ func to_dict() -> Dictionary:
 
 
 func from_dict(d: Dictionary) -> void:
+	_refresh_questions(false)   # el saber ya se cargó (SaveManager): lo que abre o responde no se vuelve a avisar
 	met.assign(d.get("met", []))
 	names = {}
 	for pid: String in d.get("names", {}):

@@ -1,5 +1,5 @@
 extends Control
-## Menú principal (docs/technical/ui_menu_spec.md §2): fondo atmosférico, título y cuatro botones.
+## Menú principal: fondo atmosférico, título y cuatro botones.
 ## Continuar solo está activo si hay partida guardada. Sin ambiente ni efectos del juego; suena menu.ogg.
 
 const VERSION_TEXT_KEY: String = "ui_menu_version"

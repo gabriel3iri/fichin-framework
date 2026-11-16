@@ -1,5 +1,5 @@
 extends Node
-## Opciones del jugador (canon 09 §11 y docs/technical/ui_menu_spec.md). Se guardan en
+## Opciones del jugador. Se guardan en
 ## user://settings.cfg y se aplican al instante. Crea los buses de audio Music, SFX y Ambient.
 
 signal changed(key: String)
@@ -7,7 +7,7 @@ signal changed(key: String)
 const PATH: String = "user://settings.cfg"
 const LANGUAGES: Array[String] = ["es", "en", "de"]
 const TEXT_SPEEDS: Array[float] = [35.0, 70.0, 140.0, 100000.0]    # caracteres por segundo: lento / normal / rápido / instantáneo
-const TIME_SCALES: Array[float] = [0.667, 1.0, 1.333]              # 40x / 60x / 80x (canon 09 §11)
+const TIME_SCALES: Array[float] = [0.667, 1.0, 1.333]              # 40x / 60x / 80x
 const DEFAULTS: Dictionary = {
 	"master": 0.8, "music": 0.7, "sfx": 0.8, "ambient": 0.6,
 	"fullscreen": true, "vsync": true, "language": "es",

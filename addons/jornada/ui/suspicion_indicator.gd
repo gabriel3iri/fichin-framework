@@ -1,6 +1,6 @@
 class_name SuspicionIndicator
 extends Control
-## Indicador de sospecha (canon 09 §4 y §8): un ojo y cuatro marcas que se encienden por umbral.
+## Indicador de sospecha: un ojo y cuatro marcas que se encienden por umbral.
 ## Sin números. Permanece oculto mientras la sospecha no llega al primer umbral (30): hasta ahí
 ## el jugador no tiene motivo para saber que el pueblo lo está mirando.
 

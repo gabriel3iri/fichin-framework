@@ -14,7 +14,7 @@ extends Area2D
 @export var prompt_y: float = -22.0
 @export var sprite_texture: Texture2D
 @export var sprite_lift: float = -10.0
-## Si es verdadero, el objeto solo se ve mientras tiene algo que decir (la libreta del diario: en el primer loop no
+## Si es verdadero, el objeto solo se ve mientras tiene algo que decir (el diario mismo: en la primera jornada no
 ## está y, una vez agarrada, desaparece de la mesa).
 @export var only_when_available: bool = false
 
@@ -26,13 +26,21 @@ var _news: bool = false
 var _time: float = 0.0
 
 
+var _hooked: bool = false
+
+
 func _ready() -> void:
 	collision_layer = 0
 	collision_mask = 4
+	if _absent_today():
+		visible = false
+		set_deferred("monitoring", false)
+		return
 	_prompt.position = Vector2(0, prompt_y)
 	if sprite_texture != null:
 		_sprite.texture = sprite_texture
 		_sprite.position = Vector2(0, sprite_lift - sprite_texture.get_height() / 2.0)
+	_hooked = true
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
 	TimeManager.minute_changed.connect(_refresh.unbind(2))
@@ -42,9 +50,23 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if not _hooked:
+		return
 	TimeManager.minute_changed.disconnect(_refresh.unbind(2))
 	LoopManager.knowledge_gained.disconnect(_refresh.unbind(1))
 	DialogueManager.dialogue_ended.disconnect(_refresh.unbind(1))
+
+
+## Una jornada especial que deja afuera lo de siempre (LoopManager.special(), `hide_regular`) también se lleva los
+## objetos examinables, salvo los de su lista `keep_objects` (en otra época no están las cosas de siempre).
+func _absent_today() -> bool:
+	var day: Dictionary = LoopManager.special()
+	if day.is_empty() or not day.get("hide_regular", false):
+		return false
+	for keep: Variant in day.get("keep_objects", []):
+		if object_id == str(keep) or object_id.ends_with("_" + str(keep)):
+			return false
+	return true
 
 
 ## Si ahora no tiene nada que decir, no le gana el [E] a una persona que esté al lado.

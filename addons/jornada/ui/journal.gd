@@ -1,11 +1,12 @@
 class_name Journal
 extends CanvasLayer
-## Diario de evidencias (tecla J, canon 09 §6). Pestañas: Evidencias, Personas, Deducciones, Mapa y, si el juego las
-## define, una lista de gente que se desbloquea con un flag (data/journal.json "roster"; en Rabenholz, El tren) y las
-## fichas para identificar a la gente (data/identify.json, sistema Identification).
+## Diario de evidencias (tecla J). Pestañas: Evidencias, Personas, Deducciones, Mapa y, si el juego las
+## define, una lista de gente que se desbloquea con un flag (data/journal.json "roster"), las
+## fichas para identificar a la gente (data/identify.json, sistema Identification) y las preguntas que se hace
+## (data/journal.json "questions", JournalManager.questions()).
 ## Mientras está abierto el reloj del día se detiene (igual que la charla y la orden de trabajo).
 
-enum Tab { EVIDENCE, PEOPLE, DEDUCTIONS, MAP, ROSTER, IDENTIFY, CASES }
+enum Tab { EVIDENCE, PEOPLE, DEDUCTIONS, MAP, ROSTER, IDENTIFY, CASES, QUESTIONS }
 
 const BASE_TAB_KEYS: Array[String] = ["ui_journal_tab_evidence", "ui_journal_tab_people", "ui_journal_tab_deductions", "ui_journal_tab_map"]
 const NUMBER_KEYS: Array[Key] = [KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8]
@@ -53,11 +54,11 @@ var _picking: bool = false
 var _pick_index: int = 0
 var _pick_buttons: Array[Button] = []
 ## Fichas: el dato que se está eligiendo ("" = la lista de datos), si al reconstruir hay que seguir eligiendo con el
-## teclado, y el filtro por la marca libre (Identification.FILTERS).
+## teclado, y el campo de la nota libre de la ficha elegida (N para escribir, Enter o Esc para terminar).
 var _ident_field: String = ""
 var _resume_pick: bool = false
 var _pick_via_key: bool = false
-var _ident_filter: String = "all"
+var _note_edit: LineEdit = null
 ## El sello de las fichas confirmadas (encima del diario) y si ya se puede seguir.
 var _stamp_layer: Control = null
 var _stamp_ready: bool = false
@@ -65,8 +66,9 @@ var _items: Array[Dictionary] = []
 var _rows: Array[Button] = []
 var _selected: int = 0
 var _icons: Dictionary = {}
-## Guía (data/game.json "journal.guide"): el cartel de ayuda abierto y lo que piensa el técnico al cerrar.
-var _tip: Control = null
+## Guía (data/game.json "journal.guide"): la que se está mostrando (ui/journal_guide.gd) y lo que piensa el jugador al
+## cerrar.
+var _guide_view: Control = null
 var _close_think: String = ""
 
 
@@ -84,6 +86,9 @@ func _ready() -> void:
 		_tab_ids.append(Tab.IDENTIFY)
 	_tab_keys.append("ui_journal_tab_cases")
 	_tab_ids.append(Tab.CASES)
+	if not (JournalManager.data().get("questions", []) as Array).is_empty():
+		_tab_keys.append("ui_journal_tab_questions")
+		_tab_ids.append(Tab.QUESTIONS)
 	# data/game.json "journal.hidden_tabs": pestañas que el juego no muestra (evidence, people, deductions, map, roster,
 	# identify). Se sacan de la lista, así las teclas 1-9 siguen corridas.
 	var hidden: Array = GameConfig.value("journal.hidden_tabs", [])
@@ -145,13 +150,28 @@ func _input(event: InputEvent) -> void:
 				or (event is InputEventMouseButton and event.pressed)):
 			_close_stamp()
 		return
+	if _guide_view != null:   # la guía: E, Enter o clic sigue; Esc o J la salta; lo demás no pasa
+		get_viewport().set_input_as_handled()
+		if event.is_action_pressed("ui_cancel") or event.is_action_pressed("journal") or event.is_action_pressed("pause_menu"):
+			_guide_view.finish()
+		elif event.is_action_pressed("interact") or event.is_action_pressed("ui_accept") \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
+			_guide_view.next()
+		return
+	if is_instance_valid(_note_edit) and _note_edit.has_focus():
+		# Escribiendo la nota: las teclas son del campo (E, J y los números son letras); Esc termina y la guarda.
+		if event.is_action_pressed("ui_cancel"):
+			_note_edit.release_focus()
+			get_viewport().set_input_as_handled()
+		return
 	if _picking and _pick_input(event):
 		get_viewport().set_input_as_handled()
 		return
 	if _current_tab() == Tab.IDENTIFY and (event.is_action_pressed("interact") or event.is_action_pressed("ui_accept")):
 		_start_picking()
-	elif _current_tab() == Tab.IDENTIFY and event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_V:
-		_cycle_ident_filter()
+	elif _current_tab() == Tab.IDENTIFY and event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_N:
+		if is_instance_valid(_note_edit):
+			_note_edit.grab_focus()
 	elif event.is_action_pressed("journal") or event.is_action_pressed("pause_menu") or event.is_action_pressed("ui_cancel"):
 		close()
 	elif event is InputEventKey and event.pressed and not event.echo and event.keycode in NUMBER_KEYS:
@@ -165,8 +185,9 @@ func _input(event: InputEvent) -> void:
 		_select(_selected - 1)
 	elif event.is_action_pressed("move_down", true):
 		_select(_selected + 1)
-	else:
-		return
+	elif event is InputEventMouse:
+		return   # los clics y arrastres son de los botones y el tablero
+	# Ninguna otra tecla llega al mundo: con el diario abierto, E no abre la puerta de al lado ni sigue la charla.
 	get_viewport().set_input_as_handled()
 
 
@@ -183,9 +204,8 @@ func open() -> void:
 func close() -> void:
 	if not _root.visible:
 		return
-	if _tip != null:
-		_tip.queue_free()
-		_tip = null
+	if _guide_view != null:
+		_guide_view.finish()
 	if _close_think != "" and is_instance_valid(ZoneManager.player):
 		ZoneManager.player.think(tr(_close_think), 4.5)
 	_close_think = ""
@@ -194,7 +214,7 @@ func close() -> void:
 	_root.visible = false
 	is_open = false
 	GameManager.sync_day_clock()
-	# Lo que se pensó en «Casos» se cobra ahora, con el técnico de vuelta en el mundo (Cases.spend_thinking).
+	# Lo que se pensó en «Casos» se cobra ahora, con el jugador de vuelta en el mundo (Cases.spend_thinking).
 	var thought: int = Cases.spend_thinking()
 	if thought > 0:
 		TimeManager.advance_minutes(thought)
@@ -204,9 +224,12 @@ func close() -> void:
 # --- Guía ---------------------------------------------------------------------------------------
 
 ## Guía del diario (data/game.json "journal.guide"): la primera vez que se consigue ("on_get"), con la primera pista
-## anotada ("first_clue") y con el primer nombre ("first_name"), el diario se abre solo apenas termina la charla, en la
-## pestaña "tab", con el cartel "tip" (%s = la pista o el nombre) y, al cerrarlo, el técnico piensa "think". Cada paso,
-## una vez por partida (JournalManager.guide_done).
+## anotada ("first_clue") y con el primer nombre ("first_name"), el diario se abre solo apenas termina la charla y la guía
+## (ui/journal_guide.gd) recorre sus "steps": cada uno abre la pestaña "tab" (si se ve; si no, el paso no va), señala
+## "target" y explica con "tip" (%s = la pista o el nombre). Al cerrar el diario, el jugador piensa "think". Cada paso
+## de la guía, una vez por partida (JournalManager.guide_done).
+## Lo que se puede señalar: "panel" (nada en especial: el cartel en el medio), "tab" (el botón de la pestaña), "clue" (la pista en el tablero),
+## "threads" (los hilos), "row" (la fila elegida de la lista) y "field" (el primer dato que se puede completar en la ficha).
 func _guide(step: String, subject: String = "") -> void:
 	var cfg: Dictionary = GameConfig.value("journal.guide", {}).get(step, {})
 	if cfg.is_empty() or step in JournalManager.guide_done or not JournalManager.has_journal():
@@ -217,41 +240,69 @@ func _guide(step: String, subject: String = "") -> void:
 		if not is_inside_tree():
 			return
 	open()
-	var tab_at: int = _tab_ids.find(Tab.keys().find(str(cfg.get("tab", "")).to_upper()))
-	if tab_at >= 0 and _tab_shown(tab_at):
-		_set_tab(tab_at)
 	var shown: String = subject
 	if step == "first_clue":
 		shown = tr("flag_" + subject)
 	elif step == "first_name":
 		shown = JournalManager.display_name(subject)
+	var steps: Array[Dictionary] = []
+	for s: Dictionary in cfg.get("steps", []):
+		var tab_at: int = -1
+		if s.has("tab"):
+			tab_at = _tab_ids.find(Tab.keys().find(str(s["tab"]).to_upper()))
+			if tab_at < 0 or not _tab_shown(tab_at):
+				continue
+		var text: String = tr(str(s.get("tip", "")))
+		steps.append({
+			"text": text % shown if "%s" in text else text,
+			"before": _guide_before.bind(tab_at, step, subject),
+			"target": _guide_target.bind(str(s.get("target", "panel")), tab_at, subject),
+		})
+	_close_think = str(cfg.get("think", ""))
+	if steps.is_empty():
+		return
+	_guide_view = load("res://addons/jornada/ui/journal_guide.gd").new()
+	_root.add_child(_guide_view)
+	_guide_view.finished.connect(func() -> void: _guide_view = null)
+	_guide_view.start(steps)
+
+
+## Antes de cada paso: la pestaña que se explica y, con la pista o el nombre, eso elegido.
+func _guide_before(tab_at: int, step: String, subject: String) -> void:
+	if tab_at >= 0 and tab_at != _tab:
+		_set_tab(tab_at)
+	if step == "first_clue" and _current_tab() == Tab.CASES:
+		_board.select(subject)
+	elif step == "first_name" and _current_tab() == Tab.IDENTIFY:
 		var card_at: int = _items.map(func(it: Dictionary) -> String:
 			return Identification.card(it.get("card", "")).get("person", "")).find(subject)
-		if card_at >= 0:
+		if card_at >= 0 and card_at != _selected:
 			_select(card_at)
-	var text: String = tr(str(cfg.get("tip", "")))
-	_show_tip(text % shown if "%s" in text else text)
-	_close_think = str(cfg.get("think", ""))
 
 
-## Se abre recién con el técnico libre: sin charla, cartel, tarea ni el diario ya abierto.
+func _guide_target(target: String, tab_at: int, subject: String) -> Rect2:
+	match target:
+		"tab":
+			return _tab_buttons[tab_at].get_global_rect() if tab_at >= 0 else Rect2()
+		"clue":
+			return _board.clue_rect(subject)
+		"threads":
+			return _board.threads_rect()
+		"row":
+			if _selected < _rows.size():
+				return _rows[_selected].get_global_rect().intersection(_list_scroll.get_global_rect())
+		"field":
+			for button: Button in _pick_buttons:
+				if not button.disabled:
+					return button.get_global_rect()
+	return Rect2()   # "panel": el cartel en el medio, con el diario entero a la vista
+
+
+## Se abre recién con el jugador libre: sin charla, cartel, tarea ni el diario ya abierto.
 func _guide_can_open() -> bool:
 	return not _root.visible and not DialogueManager.is_active and not Notices.is_busy() \
 			and GameManager.state == GameManager.State.PLAYING and WorkManager.active_task == "" \
 			and not WorkOrderPanel.is_open and not DeductionScreen.is_playing
-
-
-func _show_tip(text: String) -> void:
-	var box := PanelContainer.new()
-	box.add_theme_stylebox_override("panel", UiStyle.panel(true))
-	box.position = Vector2(40, 262)
-	box.custom_minimum_size = Vector2(560, 0)
-	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var label := _wrapped(text, UiStyle.ACCENT, 544.0)
-	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	box.add_child(label)
-	_root.add_child(box)
-	_tip = box
 
 
 # --- Construcción -------------------------------------------------------------------------------
@@ -391,6 +442,7 @@ func _rebuild() -> void:
 		Tab.MAP: _build_map()
 		Tab.ROSTER: _build_roster()
 		Tab.IDENTIFY: _build_identify()
+		Tab.QUESTIONS: _build_questions()
 	_selected = clampi(_selected, 0, maxi(_items.size() - 1, 0))
 	_refresh_selection()
 
@@ -696,17 +748,19 @@ func _deduction_item(def: Dictionary) -> Dictionary:
 
 # --- 4 · Mapa -----------------------------------------------------------------------------------
 
-const MAP_ORDER: Array[String] = ["mill", "viaduct", "station_exterior", "north_road", "foundry", "centro", "quarry", "cemetery", "stream"]
-const MAP_CELL: Vector2 = Vector2(92, 40)
+## Orden de la lista (arriba/abajo recorre el mapa fila por fila).
+const MAP_ORDER: Array[String] = ["station_exterior", "north_road", "viaduct", "foundry", "centro", "quarry", "cemetery", "mill", "stream"]
+const MAP_CELL: Vector2 = Vector2(67, 40)   # cuatro columnas entran en la lista (286 px)
+const MAP_GAP: Vector2 = Vector2(4, 6)
 
 func _build_map() -> void:
 	var cells: Dictionary = JournalManager.data().get("map_cells", {})
 	var canvas := Control.new()
-	canvas.custom_minimum_size = Vector2(286, 4 * (MAP_CELL.y + 8))
+	canvas.custom_minimum_size = Vector2(286, 4 * (MAP_CELL.y + MAP_GAP.y))
 	_list.add_child(canvas)
 	var parents: Dictionary = JournalManager.data().get("zone_parent", {})
 	for zone_id in MAP_ORDER:
-		var cell: Array = cells[zone_id]
+		var cell: Array = cells[zone_id]   # [columna, fila] o [columna, fila, ancho, alto] en casillas (el centro es alto)
 		# Un exterior cuenta como descubierto si se pisó él o cualquiera de sus interiores.
 		var visited: bool = zone_id in JournalManager.visited
 		for child_id: String in parents:
@@ -716,9 +770,11 @@ func _build_map() -> void:
 		button.toggle_mode = true
 		button.clip_text = true
 		button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		button.position = Vector2(cell[0] * (MAP_CELL.x + 4), cell[1] * (MAP_CELL.y + 6))
-		button.size = MAP_CELL
-		button.custom_minimum_size = MAP_CELL
+		var span := Vector2(float(cell[2]) if cell.size() > 2 else 1.0, float(cell[3]) if cell.size() > 3 else 1.0)
+		var size: Vector2 = MAP_CELL * span + MAP_GAP * (span - Vector2.ONE)
+		button.position = Vector2(cell[0], cell[1]) * (MAP_CELL + MAP_GAP)
+		button.size = size
+		button.custom_minimum_size = size
 		if not visited:
 			button.add_theme_color_override("font_color", UiStyle.DIM)
 		var index: int = _items.size()
@@ -792,10 +848,39 @@ func _build_roster() -> void:
 		_list.add_child(row)
 
 
+# --- Preguntas -----------------------------------------------------------------------------------
+
+## Lo que el jugador se pregunta: primero las abiertas (con lo que piensa hacer para responderlas), después las
+## respondidas (con la respuesta). Salen de lo que sabe (JournalManager.questions()).
+func _build_questions() -> void:
+	var asked: Array[Dictionary] = JournalManager.questions()
+	var open: Array[Dictionary] = []
+	var answered: Array[Dictionary] = []
+	for q: Dictionary in asked:
+		if JournalManager.question_state(q) == JournalManager.Question.ANSWERED:
+			answered.append(q)
+		else:
+			open.append(q)
+	_summary.text = tr("ui_journal_questions_progress") % [answered.size(), asked.size()]
+	if asked.is_empty():
+		_list.add_child(_wrapped(tr("ui_journal_questions_empty"), UiStyle.DIM))
+		return
+	if not open.is_empty():
+		_add_header(tr("ui_journal_questions_open"))
+		for q: Dictionary in open:
+			_add_row({"text": tr(q.get("text_key", "")), "title": tr(q.get("text_key", "")),
+					"lines": [{"text": tr(q.get("hint_key", "")), "color": UiStyle.TEXT}]})
+	if not answered.is_empty():
+		_add_header(tr("ui_journal_questions_answered"))
+		for q: Dictionary in answered:
+			_add_row({"text": tr(q.get("text_key", "")), "title": tr(q.get("text_key", "")), "color": UiStyle.DIM,
+					"subtitle": [{"text": tr("ui_journal_questions_answered_mark")}],
+					"lines": [{"text": tr(q.get("answer_key", "")), "color": UiStyle.TEXT}]})
+
+
 # --- 6 · Identificar ----------------------------------------------------------------------------
 
-## Fichas de data/identify.json por grupo: la cara, lo que anotó el jugador (o «?»), su marca y si ya está confirmada.
-## Arriba, el filtro por la marca libre (clic o V).
+## Fichas de data/identify.json por grupo: la cara, lo que anotó el jugador (o «?») y si ya está confirmada.
 func _build_identify() -> void:
 	var cfg: Dictionary = Identification.config()
 	var done: Array[int] = Identification.progress()
@@ -803,23 +888,18 @@ func _build_identify() -> void:
 	if not Identification.is_available():
 		_list.add_child(_wrapped(tr(cfg.get("empty_key", "ui_journal_ident_empty")), UiStyle.DIM))
 		return
-	var filter := UiStyle.button(tr("ui_journal_ident_filter") % tr("ui_journal_ident_filter_" + _ident_filter), true)
-	filter.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	filter.pressed.connect(_cycle_ident_filter)
-	_list.add_child(filter)
 	for group: Dictionary in Identification.visible_groups():
 		var group_cards: Array = Identification.visible_cards(group["id"])
 		var group_done: int = group_cards.filter(func(c: Dictionary) -> bool: return Identification.is_confirmed(c["id"])).size()
-		var shown: Array = group_cards.filter(func(c: Dictionary) -> bool: return Identification.passes_filter(c["id"], _ident_filter))
-		if shown.is_empty():
+		if group_cards.is_empty():
 			continue
 		_add_header("%s  %d/%d" % [tr(group["title_key"]), group_done, group_cards.size()])
-		for c: Dictionary in shown:
+		for c: Dictionary in group_cards:
 			_add_row(_identify_item(c, group))
 
 
 ## Los lugares donde el jugador vio a esa persona con el diario encima (JournalManager.sightings), en el orden en que
-## la fue viendo: «Gasthof Adler, Taquilla y Estación».
+## la fue viendo: «La posada, la taquilla y la estación».
 func _seen_places(person_id: String) -> String:
 	var names: Array[String] = []
 	for zone_id: String in JournalManager.sightings.get(person_id, {}):
@@ -831,17 +911,9 @@ func _seen_places(person_id: String) -> String:
 	return tr("ui_journal_ident_seen_and") % [", ".join(names.slice(0, -1)), names[-1]]
 
 
-func _cycle_ident_filter() -> void:
-	var filters: Array[String] = Identification.FILTERS
-	_ident_filter = filters[(filters.find(_ident_filter) + 1) % filters.size()]
-	_selected = 0
-	_rebuild()
-
-
 func _identify_item(c: Dictionary, group: Dictionary) -> Dictionary:
 	var noted: String = Identification.summary(c["id"])
 	var is_done: bool = Identification.is_confirmed(c["id"])
-	var mark: String = Identification.mark_of(c["id"])
 	var shown: String = noted if noted != "" else "?"
 	var lines: Array[Dictionary] = [{"text": tr(c.get("look_key", ""))}]
 	var places: String = _seen_places(c.get("person", ""))
@@ -851,7 +923,7 @@ func _identify_item(c: Dictionary, group: Dictionary) -> Dictionary:
 		lines.append({"text": "· " + tr(clue_key)})
 	return {
 		"card": c["id"],
-		"text": ("[x] " if is_done else "") + shown + ("  (" + tr("ui_journal_ident_mark_" + mark) + ")" if mark != "" else ""),
+		"text": ("[x] " if is_done else "") + shown,
 		"color": UiStyle.OK if is_done else (UiStyle.TEXT if noted != "" else UiStyle.DIM),
 		"icon": _face_icon(c.get("portrait", "")), "portrait": _card_portrait(c.get("portrait", "")),
 		"title": shown if noted != "" else tr("ui_journal_ident_unknown"),
@@ -867,6 +939,7 @@ func _identify_item(c: Dictionary, group: Dictionary) -> Dictionary:
 func _fill_identify_detail(card_id: String) -> void:
 	_pick_buttons.clear()
 	if Identification.is_confirmed(card_id):
+		_add_note_field(card_id)
 		return
 	var fields: Array = Identification.fields_of(card_id)
 	if fields.size() == 1:
@@ -888,18 +961,35 @@ func _fill_identify_detail(card_id: String) -> void:
 			if value == "" and Identification.options_available(field_id).is_empty():
 				field_button.disabled = true   # todavía no oyó ni leyó ningún nombre para este dato: nada que elegir
 				field_button.add_theme_color_override("font_disabled_color", UiStyle.DIM)
-		var mark: String = Identification.mark_of(card_id)
-		_add_pick_button(tr("ui_journal_ident_mark") % tr("ui_journal_ident_mark_" + (mark if mark != "" else "none")), false,
-				func() -> void:
-					_resume_pick = _pick_via_key
-					Identification.cycle_mark(card_id))
 		if Identification.guesses.has(card_id):
 			_add_pick_button(tr("ui_journal_ident_clear"), false, func() -> void: Identification.clear(card_id))
+	_add_note_field(card_id)   # la nota, debajo de los datos
 	# La ayuda, al pie: no en medio de la ficha.
 	_detail_panel.add_child(_wrapped(tr("ui_journal_ident_hint"), UiStyle.DIM))
 	if _resume_pick:
 		_resume_pick = false
 		_start_picking()
+
+
+## La nota libre de la ficha: un renglón para escribir lo que el jugador quiera de esa persona (clic o N; Enter o Esc
+## la guarda). No cuenta para confirmar.
+func _add_note_field(card_id: String) -> void:
+	var edit := LineEdit.new()
+	edit.text = Identification.note_of(card_id)
+	edit.placeholder_text = tr("ui_journal_ident_note_hint")
+	edit.max_length = Identification.NOTE_MAX
+	edit.custom_minimum_size = Vector2(DETAIL_WIDTH, 16)
+	edit.add_theme_color_override("font_color", UiStyle.TEXT)
+	edit.add_theme_color_override("font_placeholder_color", UiStyle.DIM)
+	edit.add_theme_color_override("caret_color", UiStyle.ACCENT)
+	edit.add_theme_stylebox_override("normal", UiStyle.flat(Color(0, 0, 0, 0.25), UiStyle.BORDER))
+	edit.add_theme_stylebox_override("focus", UiStyle.flat(Color(0, 0, 0, 0.35), UiStyle.ACCENT))
+	# Se guarda al terminar (no en cada letra: guardar rearma la ficha y se perdería el foco).
+	edit.text_submitted.connect(func(_t: String) -> void: edit.release_focus())
+	edit.focus_exited.connect(func() -> void: Identification.set_note.call_deferred(card_id, edit.text))
+	_detail_panel.add_child(UiStyle.label(tr("ui_journal_ident_note"), UiStyle.DIM))
+	_detail_panel.add_child(edit)
+	_note_edit = edit
 
 
 ## Las opciones de un dato (las que el jugador ya puede usar). `back`: con un botón para volver a los datos.

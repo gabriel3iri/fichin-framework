@@ -1,5 +1,5 @@
 extends Node
-## Deducciones (canon 05 §8 y 09 §7). Nunca se obtienen directamente. Dos modos (data/game.json "deductions.manual"):
+## Deducciones. Nunca se obtienen directamente. Dos modos (data/game.json "deductions.manual"):
 ##   - automático: cuando el jugador reúne las piezas, el sistema concede el flag y avisa;
 ##   - manual: el jugador las arma en el diario (Cases, pestaña «Casos»): agrupa las pistas justas en un hilo y lo
 ##     resuelve (`resolve`). Juntar las piezas no alcanza: hay que darse cuenta de qué va con qué. Las que tienen

@@ -1,5 +1,5 @@
 extends CanvasLayer
-## Zonas separadas (canon 09 §3 y docs/technical/world_navigation_design.md).
+## Zonas separadas.
 ##
 ## Cada zona es una escena que se monta en el ZoneHolder de la escena principal; el mapa de
 ## conexiones vive en data/zones.json. Dos tipos de conexión:
@@ -15,7 +15,7 @@ const ZONES_PATH: String = "res://data/zones.json"
 const TILE: int = 16
 const FADE: float = 0.3
 const SLIDE_TIME: float = 0.4
-## Zona ficticia: el personaje ya no está en ninguna (p. ej. el 409 salió).
+## Zona ficticia: el personaje ya no está en ninguna (p. ej. se fue del pueblo).
 const GONE: String = "gone"
 const OPPOSITE: Dictionary = {"north": "south", "south": "north", "east": "west", "west": "east"}
 
@@ -29,6 +29,9 @@ var _grids: Dictionary = {}
 var _holder: Node2D
 var _fade: ColorRect
 var _busy: bool = false
+## Cuadros seguidos que el jugador lleva fuera del mapa (la red de seguridad de _physics_process).
+var _outside_frames: int = 0
+const OUTSIDE_GRACE: int = 6
 
 
 func _ready() -> void:
@@ -77,6 +80,56 @@ func zone_size(zone_id: String) -> Vector2i:
 
 
 ## Exterior = tiene algún pasaje por el borde hacia otra zona (los interiores solo tienen puertas).
+## Red de seguridad: el jugador nunca camina fuera del mapa. Si quedó afuera (se pasó de un borde sin que la franja
+## de salida lo tomara, o algo lo dejó ahí), frente a un paso lo lleva a la zona vecina; si no, lo vuelve a la celda
+## libre más cercana de adentro. Avisa en la consola para poder rastrear qué lo sacó.
+func _physics_process(_delta: float) -> void:
+	if _busy or current_zone == "" or not is_instance_valid(player) or not _zones.has(current_zone) \
+			or get_tree().paused or not player.can_move or not is_exterior(current_zone):
+		_outside_frames = 0
+		return
+	var cell: Vector2i = cell_of(player.global_position)
+	var size: Vector2i = zone_size(current_zone)
+	if cell.x >= 0 and cell.y >= 0 and cell.x < size.x and cell.y < size.y:
+		_outside_frames = 0
+		return
+	_outside_frames += 1   # unos cuadros de gracia: mientras se arma una zona el jugador puede estar un instante afuera
+	if _outside_frames < OUTSIDE_GRACE:
+		return
+	_outside_frames = 0
+	for target: String in _zones[current_zone].get("connections", {}):
+		var conn: Dictionary = connection(current_zone, target)
+		if conn.get("kind", "door") != "edge":
+			continue
+		var side: String = conn["side"]
+		var out: bool = {"north": cell.y < 0, "south": cell.y >= size.y, "west": cell.x < 0,
+				"east": cell.x >= size.x}[side]
+		var along: int = cell.x if side in ["north", "south"] else cell.y
+		if out and along >= int(conn["range"][0]) - 1 and along <= int(conn["range"][1]) + 1:
+			push_warning("ZoneManager: el jugador salió del mapa en %s %s; pasa a %s" % [current_zone, cell, target])
+			walk_through(target)
+			return
+	var inside := Vector2i(clampi(cell.x, 0, size.x - 1), clampi(cell.y, 0, size.y - 1))
+	var grid: AStarGrid2D = nav_grid(current_zone)
+	var best: Vector2i = inside
+	for r in range(0, 6):
+		var found: bool = false
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				var c: Vector2i = inside + Vector2i(dx, dy)
+				if grid.is_in_boundsv(c) and not grid.is_point_solid(c):
+					best = c
+					found = true
+					break
+			if found:
+				break
+		if found:
+			break
+	push_warning("ZoneManager: el jugador salió del mapa en %s %s; vuelve a %s" % [current_zone, cell, best])
+	player.global_position = tile_px(best)
+	_snap_camera()
+
+
 ## Exterior (luz del sol, clima) o interior: "exterior" en zones.json si está; si no, lo que diga su layout (un layout
 ## "interior" es interior); sin layout, es exterior la zona que tiene algún paso por el borde.
 func is_exterior(zone_id: String) -> bool:
@@ -176,20 +229,60 @@ func _edge_arrival(zone_id: String, from_zone: String, along_px: float) -> Varia
 		along = (first + last + 1) * TILE / 2.0
 	var mapped: float = start * TILE + (along - first * TILE)
 	mapped = clampf(mapped, start * TILE + 6.0, (start + last - first + 1) * TILE - 6.0)
-	match forward["side"]:   # lado por el que se SALIÓ de from_zone
-		"east": return Vector2(TILE * 1.5, mapped)
-		"west": return Vector2(size.x * TILE - TILE * 1.5, mapped)
-		"south": return Vector2(mapped, TILE * 2.0)
-		_: return Vector2(mapped, size.y * TILE - TILE * 1.5)
+	var side: String = forward["side"]   # lado por el que se SALIÓ de from_zone
+	var arrival: Vector2
+	match side:
+		"east": arrival = Vector2(TILE * 1.5, mapped)
+		"west": arrival = Vector2(size.x * TILE - TILE * 1.5, mapped)
+		"south": arrival = Vector2(mapped, TILE * 2.0)
+		_: arrival = Vector2(mapped, size.y * TILE - TILE * 1.5)
+	return _free_arrival(zone_id, arrival, side, start, start + last - first)
+
+
+## La llegada por un borde, corrida a la celda más cercana del paso que se pisa y que tiene libre la de al lado hacia
+## adentro: la misma coordenada del otro lado puede caer en una vía, una pared o un cerco, y el jugador quedaba trabado.
+func _free_arrival(zone_id: String, arrival: Vector2, side: String, first: int, last: int) -> Vector2:
+	var grid: AStarGrid2D = nav_grid(zone_id)
+	var cell: Vector2i = cell_of(arrival)
+	var horizontal: bool = side in ["east", "west"]   # el paso corre en vertical: se mueve en y
+	var inward: Vector2i = {"east": Vector2i(1, 0), "west": Vector2i(-1, 0), "south": Vector2i(0, 1),
+			"north": Vector2i(0, -1)}[side]
+	var here: int = cell.y if horizontal else cell.x
+	var best: Vector2i = Vector2i(-1, -1)
+	for i in range(0, last - first + 1):
+		for sign in [1, -1]:
+			var k: int = here + i * sign
+			if k < first or k > last:
+				continue
+			var c: Vector2i = Vector2i(cell.x, k) if horizontal else Vector2i(k, cell.y)
+			var free := func(p: Vector2i) -> bool: return grid.is_in_boundsv(p) and not grid.is_point_solid(p)
+			if free.call(c) and free.call(c + inward):
+				best = c
+				break
+		if best != Vector2i(-1, -1):
+			break
+	if best == Vector2i(-1, -1) or best == cell:
+		return arrival
+	return tile_px(best)
+
+
+## La escena de la zona: la de siempre o, en una jornada especial (LoopManager.special(), `zone_scenes`), la suya
+## (la plaza en día de feria). Mismo id de zona: horarios y pasos sirven igual.
+func scene_path(zone_id: String) -> String:
+	var own: String = str(LoopManager.special().get("zone_scenes", {}).get(zone_id, ""))
+	if own != "" and ResourceLoader.exists(own):
+		return own
+	return _zones[zone_id]["scene"]
 
 
 # ── Navegación (A*) ────────────────────────────────────────────────────────
 ## Grilla de la zona: las celdas con colisión (tiles sólidos y objetos con huella) son obstáculos.
 func nav_grid(zone_id: String) -> AStarGrid2D:
-	if _grids.has(zone_id):
-		return _grids[zone_id]
+	var key: String = scene_path(zone_id)   # en una jornada especial la misma zona puede ser otra escena
+	if _grids.has(key):
+		return _grids[key]
 	var grid := AStarGrid2D.new()
-	var scene: PackedScene = load(_zones[zone_id]["scene"])
+	var scene: PackedScene = load(key)
 	var root: Node2D = scene.instantiate()
 	var layer_node := root.get_node("Ground") as TileMapLayer
 	var rect: Rect2i = layer_node.get_used_rect()
@@ -218,7 +311,7 @@ func nav_grid(zone_id: String) -> AStarGrid2D:
 					if grid.is_in_boundsv(Vector2i(cx, cy)):
 						grid.set_point_solid(Vector2i(cx, cy), true)
 	root.free()
-	_grids[zone_id] = grid
+	_grids[key] = grid
 	_seal_pockets(zone_id, grid)
 	return grid
 
@@ -383,7 +476,10 @@ func teleport(target: String, px: Vector2) -> void:
 	_busy = false
 
 
-## Borde entre exteriores vecinos: la pantalla se desliza a la zona siguiente (sin fundido negro).
+## Borde entre exteriores vecinos: la pantalla se desliza a la zona siguiente (sin fundido negro). Las dos fotos se
+## sacan fuera de pantalla (_capture_offscreen) y la del lugar viejo tapa la pantalla desde antes del cambio: no se ve
+## un cuadro de la zona nueva antes de deslizar. Ninguna espera puede colgar el paso: si no hay foto, cambia sin
+## deslizar (si no, _busy quedaba en true y los bordes siguientes no andaban: se caminaba de largo, fuera del mapa).
 func walk_through(target: String) -> void:
 	if _busy or not has_zone(target):
 		return
@@ -395,16 +491,20 @@ func walk_through(target: String) -> void:
 	var from_zone: String = current_zone
 	var side: String = conn["side"]
 	var along: float = player.global_position.y if side in ["east", "west"] else player.global_position.x
-	var old_view: ImageTexture = await _capture_world()
+	var drawn: bool = DisplayServer.get_name() != "headless"   # sin pantalla no hay foto: se cambia sin deslizar
+	var old_view: ImageTexture = await _capture_offscreen() if drawn else null
+	var overlay: CanvasLayer = _cover(old_view) if old_view != null else null
 	_swap(target)
 	var arrival: Variant = spawn_px(target, from_zone, along)
 	if arrival != null:
 		player.global_position = arrival
 		_snap_camera()
 	await get_tree().process_frame
-	await get_tree().process_frame
-	var new_view: ImageTexture = await _capture_world()
-	await _slide(old_view, new_view, side)
+	var new_view: ImageTexture = await _capture_offscreen() if overlay != null else null
+	if overlay != null and new_view != null:
+		await _slide(overlay, new_view, side)
+	if overlay != null:
+		overlay.queue_free()
 	player.can_move = not DialogueManager.is_active   # si en el fundido le hablaron, sigue quieto hasta que termine la charla
 	_busy = false
 
@@ -420,7 +520,7 @@ func _swap(zone_id: String) -> void:
 	if zone_root != null:
 		_holder.remove_child(zone_root)
 		zone_root.free()
-	var scene: PackedScene = load(_zones[zone_id]["scene"])
+	var scene: PackedScene = load(scene_path(zone_id))
 	zone_root = scene.instantiate()
 	_holder.add_child(zone_root)
 	current_zone = zone_id
@@ -433,41 +533,58 @@ func _fade_to(alpha: float) -> void:
 	await tween.finished
 
 
-## Foto del mundo sin la interfaz (HUD, avisos...), para la transición deslizante.
-func _capture_world() -> ImageTexture:
-	var hidden: Array[CanvasLayer] = []
-	for node in get_tree().root.find_children("*", "CanvasLayer", true, false):
-		var layer_node := node as CanvasLayer
-		if layer_node != self and layer_node.visible and layer_node.layer >= 10:
-			layer_node.visible = false
-			hidden.append(layer_node)
-	# El cambio de visibilidad tarda unos cuadros en llegar a la textura del viewport.
-	for _i in 4:
-		await RenderingServer.frame_post_draw
-	var image: Image = get_viewport().get_texture().get_image()
-	for layer_node in hidden:
-		layer_node.visible = true
+## Foto del mundo sin la interfaz, sacada fuera de pantalla: un SubViewport que mira el mismo mundo con una cámara
+## puesta donde está la del jugador. No esconde el HUD ni muestra nada en la pantalla. Devuelve null si en unos cuadros
+## no hubo dibujo (la ventana tapada o minimizada): quien llama cambia de zona sin deslizar.
+func _capture_offscreen() -> ImageTexture:
+	var main_camera: Camera2D = get_viewport().get_camera_2d()
+	if main_camera == null:
+		return null
+	var screen: Vector2 = get_viewport().get_visible_rect().size
+	var vp := SubViewport.new()
+	vp.size = Vector2i(screen)
+	vp.world_2d = get_viewport().world_2d
+	vp.canvas_item_default_texture_filter = Viewport.DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	var camera := Camera2D.new()
+	camera.position = main_camera.get_screen_center_position()
+	camera.zoom = main_camera.zoom
+	vp.add_child(camera)
+	add_child(vp)
+	camera.make_current()
+	var image: Image = null
+	for _i in 3:
+		await get_tree().process_frame
+		image = vp.get_texture().get_image()
+	vp.queue_free()
+	if image == null or image.is_empty():
+		return null
 	return ImageTexture.create_from_image(image)
 
 
-func _slide(old_view: Texture2D, new_view: Texture2D, side: String) -> void:
+## Tapa la pantalla con la foto del lugar que se deja, antes de cambiar de zona.
+func _cover(view: Texture2D) -> CanvasLayer:
 	var overlay := CanvasLayer.new()
 	overlay.layer = 95
 	add_child(overlay)
+	overlay.add_child(_view_rect(view, get_viewport().get_visible_rect().size))
+	return overlay
+
+
+## Desliza la foto vieja (ya en `overlay`) hacia afuera y entra la nueva por el otro lado.
+func _slide(overlay: CanvasLayer, new_view: Texture2D, side: String) -> void:
 	var screen: Vector2 = get_viewport().get_visible_rect().size
 	var direction: Vector2 = {
 		"east": Vector2(-1, 0), "west": Vector2(1, 0), "south": Vector2(0, -1), "north": Vector2(0, 1),
 	}[side]
-	var old_rect: Sprite2D = _view_rect(old_view, screen)
+	var old_rect: Sprite2D = overlay.get_child(0) as Sprite2D
 	var new_rect: Sprite2D = _view_rect(new_view, screen)
-	overlay.add_child(old_rect)
 	overlay.add_child(new_rect)
 	new_rect.position = -direction * screen
 	var tween: Tween = create_tween().set_parallel(true).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tween.tween_property(old_rect, "position", direction * screen, SLIDE_TIME)
 	tween.tween_property(new_rect, "position", Vector2.ZERO, SLIDE_TIME)
 	await tween.finished
-	overlay.queue_free()
 
 
 ## La foto se dibuja con un Sprite2D escalado explícitamente a la pantalla virtual.

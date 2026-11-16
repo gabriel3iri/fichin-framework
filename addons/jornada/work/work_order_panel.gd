@@ -73,7 +73,7 @@ func _refresh() -> void:
 	for mandatory in [true, false]:
 		_body.add_child(UiStyle.label(tr("work_mandatory" if mandatory else "work_optional"), UiStyle.DIM))
 		for task: Dictionary in WorkManager.tasks:
-			if task["mandatory"] == mandatory:
+			if bool(task.get("mandatory", false)) == mandatory:
 				_body.add_child(_task_row(task))
 	var total: int = WorkManager.tasks.size()
 	_body.add_child(UiStyle.label(tr("work_progress") % [WorkManager.completed_count(), total], UiStyle.TEXT))
@@ -89,7 +89,7 @@ func _task_row(task: Dictionary) -> HBoxContainer:
 	mark.custom_minimum_size = Vector2(16, 0)
 	var name_label := UiStyle.label(tr(task["name_key"]), UiStyle.DIM if done else UiStyle.TEXT)
 	name_label.custom_minimum_size = Vector2(150, 0)
-	var minutes := UiStyle.label("%d min" % task["duration"], UiStyle.DIM)
+	var minutes := UiStyle.label("%d min" % WorkManager.duration_for(task), UiStyle.DIM)
 	row.add_child(mark)
 	row.add_child(name_label)
 	row.add_child(minutes)

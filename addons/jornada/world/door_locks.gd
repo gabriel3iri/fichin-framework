@@ -1,8 +1,8 @@
 class_name DoorLocks
 extends RefCounted
 ## Puertas cerradas con llave (data/locks.json). Una puerta se abre si pasó la hora `open_from`, si el jugador tiene
-## alguno de los flags de `open_if_any`, o si no hay regla. Canon 07 loops 11-13: el archivo del Rathaus está
-## cerrado; se abre con la vía policial (gennaro_investigation_open) o después de las 17:15, cuando Brandt se va.
+## alguno de los flags de `open_if_any`, o si no hay regla (un archivo que se abre
+## cuando su dueño se va, o con un permiso). `closed_if_any` la cierra; `hours` es el horario de un negocio.
 
 const PATH: String = "res://data/locks.json"
 

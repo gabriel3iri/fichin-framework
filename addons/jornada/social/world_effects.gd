@@ -1,7 +1,7 @@
 extends Node
 ## Registro de efectos: lo que un diálogo o un objeto puede hacerle al mundo (campo "effects" de data/dialogue/*.json).
-## El framework no sabe qué efectos hay: cada juego registra los suyos al arrancar (en Rabenholz,
-## scripts/story/rabenholz_story.gd) con `register("halt_train", func() -> void: ...)`.
+## El framework no sabe qué efectos hay: cada juego registra los suyos al arrancar (en un autoload propio) con
+## `register("abrir_horno", func() -> void: ...)`.
 ## DataValidator comprueba que todo efecto usado en un JSON esté registrado.
 
 var _effects: Dictionary = {}   # id -> Callable

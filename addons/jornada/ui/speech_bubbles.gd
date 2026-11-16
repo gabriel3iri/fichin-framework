@@ -46,6 +46,9 @@ var alpha_for: Callable = func(_pos: Vector2) -> float: return 1.0
 var find_name: Callable = func(_word: String, _before: String) -> Array: return []
 
 
+var _clock_seen: float = -1.0   # la hora del reloj en el cuadro anterior (_process)
+
+
 class Bubble:
 	var speaker: Node2D
 	var head: Vector2          # punta de la colita, relativa al origen de quien habla
@@ -204,12 +207,25 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
+	# Lo que dice la gente dura en tiempo del juego (día de la marmota: si un globo sigue o no a cierta hora decide quién
+	# habla después): con el reloj frenado (charla, diario) queda quieto. Lo que piensa el jugador, en tiempo real.
+	var world: float = delta   # reloj parado por otra cosa (el final del día, una prueba): en tiempo real
+	match TimeManager.world():
+		TimeManager.World.CLOCK:
+			world = TimeManager.seconds_since(_clock_seen) if _clock_seen >= 0.0 else 0.0
+		TimeManager.World.HELD:
+			world = 0.0
+	_clock_seen = TimeManager.minutes
 	if _bubbles.is_empty():
 		_set_hover([])
 		return
 	for b: Bubble in _bubbles.duplicate():
-		b.age += delta
-		if b.age >= b.seconds + FADE or not is_instance_valid(b.speaker) or not b.speaker.is_inside_tree():
+		# Quien hablaba ya no está (otra zona, otra jornada): el globo se va sin mirarlo (estaba liberado).
+		if not is_instance_valid(b.speaker) or not b.speaker.is_inside_tree():
+			_bubbles.erase(b)
+			continue
+		b.age += world if b.speaker is NpcActor else delta
+		if b.age >= b.seconds + FADE:
 			_bubbles.erase(b)
 	_layout()
 	_set_hover(_name_at(Vector2i(get_local_mouse_position().round())))
@@ -250,6 +266,14 @@ func _anchor(b: Bubble) -> Vector2i:
 	return Vector2i(screen.round())
 
 
+## ¿Se ve en pantalla a `speaker` (su cabeza, `head`)? Quien está en la zona pero fuera de cuadro no habla.
+func on_screen(speaker: Node2D, head: Vector2) -> bool:
+	if not speaker.is_visible_in_tree():
+		return false
+	var at: Vector2 = get_viewport().get_canvas_transform() * (speaker.global_position + head)
+	return Rect2(_screen()).has_point(at)
+
+
 func _screen() -> Rect2i:
 	return Rect2i(Vector2i.ZERO, Vector2i(get_viewport_rect().size))
 
@@ -261,8 +285,8 @@ func _layout() -> void:
 	var taken: Array[Rect2i] = []
 	for b: Bubble in order:
 		b.shown = false
-		if not b.speaker.is_visible_in_tree():
-			continue
+		if not is_instance_valid(b.speaker) or not b.speaker.is_visible_in_tree():
+			continue   # liberado (se fue de la zona) antes de que _process lo sacara: no se dibuja
 		var anchor: Vector2i = _anchor(b)
 		if not _screen().has_point(anchor):
 			continue

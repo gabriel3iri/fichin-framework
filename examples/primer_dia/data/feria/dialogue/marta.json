@@ -1,0 +1,19 @@
+{
+	"npc_id": "marta",
+	"name_key": "chr_marta",
+	"entries": [
+		{
+			"id": "marta_feria",
+			"text_key": "dlg_marta_feria",
+			"entry": true,
+			"priority": 10,
+			"options": [
+				{
+					"text_key": "opt_bye",
+					"method": "silence",
+					"next": ""
+				}
+			]
+		}
+	]
+}

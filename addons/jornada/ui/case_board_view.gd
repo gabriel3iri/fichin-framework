@@ -112,6 +112,20 @@ func select(flag: String) -> void:
 	_shown = str([Cases.clues(), Cases.threads, _selected, TranslationServer.get_locale()])
 
 
+## Dónde se ve una pista de la lista (la guía del diario la señala); vacío si no está.
+func clue_rect(flag: String) -> Rect2:
+	for row in _list.get_children():
+		if row is ClueRow and row.flag == flag:
+			return row.get_global_rect().intersection(_list.get_parent().get_global_rect())
+	return Rect2()
+
+
+## Dónde van los hilos: el encabezado, con el botón de hilo nuevo.
+func threads_rect() -> Rect2:
+	var right: Control = _grid.get_parent().get_parent()
+	return right.get_child(0).get_global_rect()
+
+
 func _row_style(selected: bool) -> StyleBoxFlat:
 	return UiStyle.flat(Color(1, 1, 1, 0.1) if selected else Color(0, 0, 0, 0), UiStyle.ACCENT if selected else Color(0, 0, 0, 0))
 

@@ -1,5 +1,5 @@
 extends Node
-## Confianza de cada persona con el jugador (data/trust.json): un nivel de `min` a `max` (−2 a 3 en Rabenholz) que arranca
+## Confianza de cada persona con el jugador (data/trust.json): un nivel de `min` a `max` (p. ej. −2 a 3) que arranca
 ## en 0 cada jornada. Sin ese archivo el juego no tiene confianza numérica y todo sigue con los flags sueltos.
 ##
 ##   - Los flags `<persona>_trust_<n>` (y `<persona>_trust`, el nivel 1) siguen siendo lo que piden diálogos y sistemas:
@@ -9,7 +9,7 @@ extends Node
 ##     preguntas (más allá de su `patience`) y LoopManager.lose_trust.
 ##   - En `min` no habla más en la jornada (DialogueManager.snubs).
 ##   - Se ve en la caja de diálogo: una barra bajo el retrato, de roja a verde (DialogueBox).
-## La persona es la del diario (JournalManager), no el id del diálogo: Hanns es «furrer».
+## La persona es la del diario (JournalManager), no el id del diálogo (alguien puede hablar con otro id).
 
 signal changed(person: String, level: int, delta: int)
 

@@ -4,7 +4,7 @@ extends Area2D
 ## puesto de los objetos de data/speeches.json "seats". E sienta al jugador mirando hacia `face`; moverse lo levanta.
 
 const PROMPT_SCENE: PackedScene = preload("res://addons/jornada/scenes/interact_prompt.tscn")
-const REACH: float = 14.0
+const REACH: float = 18.0
 
 var face: Vector2 = Vector2.UP
 ## Mira a una mesa (data/speeches.json "toward"); si no, a lo que tenga adelante (la barra).
@@ -19,7 +19,7 @@ func _ready() -> void:
 	var circle := CircleShape2D.new()
 	circle.radius = REACH
 	shape.shape = circle
-	shape.position = Vector2(0, 8)   # se llega desde adelante del banco
+	shape.position = Vector2(0, -2)   # centrada en el asiento: se llega desde cualquier lado libre (adelante, arriba, el costado)
 	add_child(shape)
 	_prompt = PROMPT_SCENE.instantiate()
 	_prompt.position = Vector2(0, -26)

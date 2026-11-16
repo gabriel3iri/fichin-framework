@@ -1,0 +1,14 @@
+{
+	"npc_id": "marta",
+	"entries": [
+		{
+			"time": "09:00",
+			"zone": "plaza",
+			"tile": [
+				24,
+				13
+			],
+			"doing": "vender"
+		}
+	]
+}

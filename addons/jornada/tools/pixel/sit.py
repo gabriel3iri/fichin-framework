@@ -1,8 +1,9 @@
 """Cuadros de sentado a partir de la hoja de un personaje (16x32 por cuadro, ver core.save_sheet).
 
 De cada vista quieta (de frente, de espaldas y de perfil) sale una sentada: el cuerpo de la cadera para arriba baja
-DROP píxeles y las piernas se rehacen. De frente se ven las canillas y los zapatos (los muslos van hacia la cámara);
-de espaldas no se ven (quedan del otro lado del asiento); de perfil, el muslo horizontal y la canilla hacia el piso.
+DROP píxeles (la cadera, a la altura del asiento) y las piernas se rehacen. De frente, las piernas enteras un poco más
+cortas (los muslos en escorzo, la rodilla en sombra); de espaldas no se ven (quedan del otro lado del asiento); de
+perfil, el muslo horizontal y una canilla de su largo hasta el piso.
 El resultado es `<id>_sit.png` (48x32: down, up, side) al lado de `<id>_sheet.png`; CharacterFrames lo carga si está.
 
     python3 addons/jornada/tools/pixel/sit.py carpeta [carpeta...]   # una _sit.png por cada _sheet.png
@@ -14,8 +15,7 @@ from PIL import Image
 
 W, H = 16, 32
 HIP = 22          # fila donde empiezan las piernas (igual en chicos: shrink() quita filas del pecho)
-DROP = 5          # cuánto baja el cuerpo al sentarse
-FEET = 27         # de frente, de acá para abajo quedan las canillas y los zapatos
+DROP = 2          # cuánto baja el cuerpo al sentarse: la cadera queda a la altura del asiento (SEAT_H de los muebles)
 T = (0, 0, 0, 0)
 
 
@@ -38,6 +38,10 @@ def _color(img: Image.Image, spots: list, fallback: tuple) -> tuple:
     return fallback
 
 
+def _shade(c: tuple, k: float) -> tuple:
+    return tuple(max(0, min(255, int(v * k))) for v in c[:3]) + (c[3],)
+
+
 def _outline(img: Image.Image, ink: tuple) -> None:
     src = img.copy()
     for y in range(H):
@@ -52,32 +56,56 @@ def _outline(img: Image.Image, ink: tuple) -> None:
 
 
 def sit_front(img: Image.Image) -> Image.Image:
+    """De frente: las piernas enteras pero DROP filas más cortas (los muslos vienen hacia la cámara, en escorzo), con
+    la línea de la rodilla en sombra. Así se ve un adulto sentado y no un torso apoyado en los zapatos."""
     out = _body(img)
-    legs = img.crop((0, FEET, W, H))
-    out.alpha_composite(legs, (0, FEET))   # canillas y zapatos donde estaban
+    legs = img.crop((0, HIP, W, H))                       # 10 filas: pantalón y zapatos
+    keep = list(range(legs.height))
+    for k in range(DROP):                                 # se quitan filas del medio del pantalón (el escorzo)
+        keep.remove(2 + k * 2)
+    knee = 2                                              # la rodilla, en la fila donde termina el muslo
+    for i, row in enumerate(keep):
+        line = legs.crop((0, row, W, row + 1))
+        if i < knee:                                      # el muslo, de frente, recibe más luz
+            line = Image.eval(line, lambda v: v)
+            px = line.load()
+            for x in range(W):
+                if px[x, 0][3] > 200 and sum(px[x, 0][:3]) > 90:
+                    px[x, 0] = _shade(px[x, 0], 1.15)
+        elif i == knee:
+            px = line.load()
+            for x in range(W):
+                if px[x, 0][3] > 200 and sum(px[x, 0][:3]) > 90:
+                    px[x, 0] = _shade(px[x, 0], 0.7)
+        out.alpha_composite(line, (0, HIP + DROP + i))
     return out
 
 
 def sit_back(img: Image.Image) -> Image.Image:
-    return _body(img)
+    """De espaldas: el cuerpo y el asiento del pantalón; las piernas quedan del otro lado, tapadas."""
+    out = _body(img)
+    out.alpha_composite(img.crop((0, HIP, W, HIP + 2)), (0, HIP + DROP))
+    return out
 
 
 def sit_side(img: Image.Image, ink: tuple) -> Image.Image:
-    """Mirando a la derecha: muslo hacia adelante a la altura de la cadera bajada, canilla al piso."""
+    """Mirando a la derecha: el muslo horizontal a la altura de la cadera, la rodilla adelante y la canilla hasta el
+    piso, del largo de una canilla de verdad (el asiento está a SEAT_H px: la canilla lo cubre entera)."""
     out = _body(img)
     pants = _color(img, [(6, 25), (7, 25), (8, 26), (6, 27), (9, 26)], (60, 60, 70, 255))
-    shoe = _color(img, [(9, 29), (8, 29), (10, 29), (6, 29)], (40, 30, 25, 255))
-    dark = tuple(max(0, int(v * 0.75)) for v in pants[:3]) + (255,)
-    hip_y = HIP + DROP - 1
-    for x in range(5, 12):             # muslo
-        out.putpixel((x, hip_y - 1), pants)
-        out.putpixel((x, hip_y), dark if x < 7 else pants)
-    for y in range(hip_y + 1, 29):     # canilla
-        out.putpixel((10, y), pants)
-        out.putpixel((11, y), dark)
-    for x in range(10, 14):            # zapato
-        out.putpixel((x, 29), shoe)
-        out.putpixel((x, 30), shoe)
+    shoe = _color(img, [(9, 30), (9, 29), (8, 29), (10, 29), (6, 29)], (40, 30, 25, 255))
+    dark = _shade(pants, 0.75)
+    light = _shade(pants, 1.12)
+    hip_y = HIP + DROP                 # primera fila debajo del cuerpo
+    for x in range(4, 13):             # muslo: dos filas, la de arriba con luz
+        out.putpixel((x, hip_y - 1), light if x > 6 else pants)
+        out.putpixel((x, hip_y), pants if x < 11 else dark)
+    for y in range(hip_y + 1, H - 2):  # canilla, de la rodilla al piso
+        out.putpixel((11, y), pants)
+        out.putpixel((12, y), dark)
+    for x in range(11, 15):            # zapato, con la punta adelante
+        out.putpixel((x, H - 2), shoe)
+        out.putpixel((x, H - 1), _shade(shoe, 0.8))
     _outline(out, ink)
     return out
 

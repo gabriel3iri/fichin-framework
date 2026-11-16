@@ -1,6 +1,6 @@
 class_name DeductionScreen
 extends CanvasLayer
-## Pantalla de deducción (canon 09 §7): el juego se detiene, los bordes se oscurecen y las piezas
+## Pantalla de deducción: el juego se detiene, los bordes se oscurecen y las piezas
 ## se conectan en el centro. Sin voz y sin música nueva; solo el sonido de un sello.
 
 ## Lo consulta el diario para no abrirse mientras la deducción está en pantalla.

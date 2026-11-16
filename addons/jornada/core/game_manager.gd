@@ -1,5 +1,5 @@
 extends Node
-## Estado global: arranque, pausa y sospecha (0-100, canon 09 §4). Valida los datos al iniciar.
+## Estado global: arranque, pausa y sospecha (0-100). Valida los datos al iniciar.
 
 enum State { NOT_STARTED, PLAYING, PAUSED }
 
@@ -20,7 +20,7 @@ var pending_loop: int = 1
 
 
 func _ready() -> void:
-	# El idioma lo aplica SettingsManager (por defecto español: canon 10).
+	# El idioma lo aplica SettingsManager (por defecto, español).
 	LoopManager.loop_started.connect(_on_loop_started)
 
 
@@ -46,7 +46,7 @@ func start_scene() -> void:
 	state = State.NOT_STARTED
 	suspicion = 0
 	# El reloj vuelve al principio ANTES de cargar la escena: los NPC se colocan según la hora al nacer, y con la hora de la
-	# partida anterior (p. ej. las 17:47) aparecían donde estaban de tarde y caminaban hasta su lugar de las 06:00.
+	# partida anterior (p. ej. al final del día) aparecían donde estaban de tarde y caminaban hasta su lugar de la mañana.
 	# Y quieto: hasta que cambie la escena, el mundo viejo sigue un cuadro, y con el reloj andando registraba cosas
 	# (el diario anotaba la zona de la que se venía). La escena nueva lo arranca en start_game().
 	TimeManager.pause()
@@ -82,7 +82,15 @@ func resume_game() -> void:
 ## ¿Hay algo que deba detener el reloj del día? (charla, diario, orden, o pausa del juego). Lo pensado en la pestaña
 ## «Casos» se cobra al cerrar el diario (Cases.spend_thinking).
 func day_clock_held() -> bool:
-	return state == State.PAUSED or DialogueManager.is_active or Journal.is_open or WorkOrderPanel.is_open
+	var talking: bool = DialogueManager.is_active and not clock_runs_in_dialogue()
+	return state == State.PAUSED or talking or Journal.is_open or WorkOrderPanel.is_open
+
+
+## ¿El reloj sigue andando mientras se habla con alguien? (data/game.json "day.clock_runs_in_dialogue"; por defecto
+## no). Con el reloj andando, el mundo sigue con él (TimeManager.world): quien habla con el jugador se queda quieto y
+## los demás siguen su día.
+func clock_runs_in_dialogue() -> bool:
+	return bool(GameConfig.value("day.clock_runs_in_dialogue", false))
 
 
 ## El reloj de la jornada se detiene con charla, diario u orden de trabajo. Llamar al abrir/cerrar cualquiera.
@@ -104,11 +112,18 @@ func add_suspicion(delta: int) -> void:
 	if delta > 0:
 		AudioManager.play_sfx("suspicion_up", -4.0)
 	if before < suspicion_warning and suspicion >= suspicion_warning:
-		LoopManager.gain_knowledge(GameConfig.flag("suspicion_warning"))
+		_gain_role("suspicion_warning")
 		AudioManager.play_sfx("arrest_warning")
 	if suspicion >= suspicion_arrest:
-		LoopManager.gain_knowledge(GameConfig.flag("suspicion_arrest"))
+		_gain_role("suspicion_arrest")
 		LoopManager.end_day.call_deferred("arrest")
+
+
+## Da el flag del rol `role` (data/game.json "flags") si el juego le puso uno: un rol sin flag no se usa.
+func _gain_role(role: String) -> void:
+	var role_flag: String = GameConfig.flag(role)
+	if role_flag != "":
+		LoopManager.gain_knowledge(role_flag)
 
 
 func _on_loop_started(_loop_number: int) -> void:

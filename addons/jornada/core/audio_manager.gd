@@ -1,9 +1,8 @@
 extends Node
-## Audio del juego (canon 09 §10). Todo el audio es CC0 / dominio público (assets/audio/CREDITS.md,
-## se regenera con tools/import_audio.py).
+## Audio del juego (data/audio.json; los archivos, en assets/audio/).
 ##
-## Cuatro capas: música (mínima; silencio entre 17:30 y 17:47), ambiente por zona, efectos
-## diegéticos y el tic del reloj, que sube de volumen desde las 17:00.
+## Cuatro capas: música (mínima; silencio desde music_silence_from), ambiente por zona, efectos
+## diegéticos y el tic del reloj, que sube de volumen desde clock_tick_from.
 ## Buses: Master > Music / SFX / Ambient (los crea SettingsManager). Todo se configura en data/audio.json.
 
 const CONFIG_PATH: String = "res://data/audio.json"

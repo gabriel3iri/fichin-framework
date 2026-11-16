@@ -33,6 +33,8 @@ var _glass_textures: Dictionary = {}   # por tile; vive lo que la partida (main.
 
 var _actors: Node2D
 var _keys: Dictionary = {}
+## Zonas más oscuras que el resto de los interiores (data/lighting.json "dim": {zona: factor 0-1}).
+var _dim: Dictionary = {}
 var _sunrise: float
 var _sunset: float
 var _azimuth_rise: float
@@ -67,6 +69,7 @@ func _ready() -> void:
 			keys.append({"t": float(TimeManager.parse_clock(k["time"])), "color": Color(k["color"]),
 					"glow": float(k["glow"]), "sun": float(k["sun"])})
 		_keys[kind] = keys
+	_dim = data.get("dim", {})
 	TimeManager.minute_changed.connect(_on_minute.unbind(2))
 	ZoneManager.zone_changed.connect(_on_zone_changed)
 	if ZoneManager.current_zone != "":
@@ -117,6 +120,9 @@ func refresh() -> void:
 	var light: Dictionary = sample(TimeManager.minutes, _exterior)
 	_outside = sample(TimeManager.minutes, true)
 	_base = light["color"]
+	var dim: float = float(_dim.get(ZoneManager.current_zone, 1.0))
+	if dim < 1.0:                                              # un sótano sin ventanas: solo lo que alumbran los faroles
+		_base = Color(_base.r * dim, _base.g * dim, _base.b * dim)
 	_glow = light["glow"]
 	_tint(ZoneManager.zone_root, _base)
 	_tint(_actors, _base)

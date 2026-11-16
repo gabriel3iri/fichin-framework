@@ -19,7 +19,7 @@ opcional; lo que falta se deduce del resto):
   marks: scar_cheek, scar_brow, mole, freckles, pockmarks, broken_nose, stubble
   expression: neutral | stern | kind | worried | sly | tired | nervous | proud | sad
   turn: front | left | right (3/4 hacia ese lado)
-  props: cigarette, pipe, pencil_ear, pince_nez, earrings, medal, rosary, scarf, pearl_necklace
+  props: cigarette, pipe, pencil_ear, pince_nez, earrings, medal, rosary, scarf, pearl_necklace, baby
   mustache: brush | walrus | handlebar | pencil (forma del bigote, si tiene; si no, sale del cuerpo y la edad)
 """
 import math
@@ -230,6 +230,7 @@ class Bust:
             "iris": ramp6(self.f["eye_color"]), "brass": ramp6("#B08A3A"), "glass": ramp6("#9FB3C2"),
             "paper": ramp6("#E8E2CC"), "pipe": ramp6("#6A3E24"), "grey": ramp6(_grey(hair_hex)),
             "ember": ramp6("#E06A2A"), "red": ramp6("#9A2E2A"), "black": ramp6("#26242A"),
+            "blanket": ramp6(d.get("blanket", "#C9BFA6")),
         }
         self.R["iris"][5] = _mix(self.R["iris"][4], (255, 255, 255), 0.35)
         self.R["eyew"] = [(52, 36, 40, 255), (132, 118, 118, 255), (178, 166, 162, 255), (212, 204, 196, 255),
@@ -2227,6 +2228,27 @@ class Bust:
                     self.put(mx + dx, my + dy, mat, t - (1 if dx == 2 else 0))
             for dx, dy, t in ((0, 4, 4), (1, 4, 5), (2, 4, 3), (0, 5, 3), (1, 5, 4), (2, 5, 2), (1, 6, 2)):
                 self.put(mx + dx, my + dy, "gold", t)
+        if "baby" in props:                                     # un bebé envuelto, en brazos, abajo del busto
+            cx, cy, rx, ry = self.bx - 6, SIZE - 9, 17, 11
+            for y in range(int(cy - ry), SIZE):
+                for x in range(int(cx - rx), int(cx + rx) + 1):
+                    u, v = (x + 0.5 - cx) / rx, (y + 0.5 - cy) / ry
+                    if u * u + v * v <= 1:
+                        fold = (x + y) % 7 == 0
+                        self.put(x, y, "blanket", self.lit(-u, -v, 0.8) - (1 if fold else 0))
+            fx, fy, r = cx - 7, cy - 4, 5.2                      # la cara, que asoma de la manta
+            for y in range(int(fy - r), int(fy + r) + 1):
+                for x in range(int(fx - r), int(fx + r) + 1):
+                    u, v = (x + 0.5 - fx) / r, (y + 0.5 - fy) / r
+                    if u * u + v * v <= 1:
+                        self.put(x, y, "skin", self.lit(-u, -v, 0.9))
+            self.put(fx - 2, fy - 0.5, "lash", 1)                # ojitos cerrados
+            self.put(fx - 1, fy - 0.5, "lash", 2)
+            self.put(fx + 1, fy - 0.5, "lash", 1)
+            self.put(fx + 2, fy - 0.5, "lash", 2)
+            self.put(fx, fy + 2, "lip", 2)
+            for dy in range(-6, -2):                             # el borde de la manta sobre la frente
+                self.put(fx + dy + 1, fy + dy * 0.6 - 1, "blanket", 4)
         if "pencil_ear" in props:
             ex = self.ear_pos[0][0] if getattr(self, "ear_pos", None) else self.rows[self.ey][0]
             for i in range(9):
