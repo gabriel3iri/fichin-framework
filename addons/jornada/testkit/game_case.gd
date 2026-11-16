@@ -17,6 +17,11 @@ func before_each() -> void:
 	tm = autoload("TimeManager")
 	Engine.time_scale = 1.0
 	tree.paused = false
+	# Las opciones por defecto, sin guardarlas: la prueba no depende de las de quien la corre (idioma, zoom, volumen)
+	# ni las pisa.
+	var settings: Node = autoload("SettingsManager")
+	settings.set("persist", false)
+	settings.call("use_defaults")
 	if tree.root.has_node("Notices"):   # un cartel pausa el juego a mitad de la prueba: la que lo quiere lo prende
 		tree.root.get_node("Notices").set("enabled", false)
 	lm.reset_all()

@@ -19,6 +19,8 @@ const DEFAULTS: Dictionary = {
 const SESSION_ONLY: Array[String] = ["debug_name_tags"]
 
 var values: Dictionary = DEFAULTS.duplicate()
+## false: los cambios valen en memoria pero no se guardan (las pruebas: no pisan las opciones de quien juega).
+var persist: bool = true
 
 
 func _ready() -> void:
@@ -43,6 +45,15 @@ func set_value(key: String, value: Variant) -> void:
 	_apply(key)
 	_save()
 	changed.emit(key)
+
+
+## Vuelve a las opciones por defecto, solo en memoria (sin leer ni tocar user://settings.cfg). Lo usa el kit de
+## pruebas: lo que pasa en una prueba no puede depender de cómo tiene configurado el juego quien la corre.
+func use_defaults() -> void:
+	values = DEFAULTS.duplicate()
+	for key: String in values:
+		if key not in ["fullscreen", "vsync"]:   # la ventana, como esté
+			_apply(key)
 
 
 func text_chars_per_second() -> float:
@@ -83,6 +94,8 @@ func _load() -> void:
 ## Guarda solo lo que el jugador cambió: si después cambia un valor por defecto (la pantalla completa), le llega a
 ## quien nunca lo tocó.
 func _save() -> void:
+	if not persist:
+		return
 	var cfg := ConfigFile.new()
 	for key: String in values:
 		if key not in SESSION_ONLY and values[key] != DEFAULTS.get(key):

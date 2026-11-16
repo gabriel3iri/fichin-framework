@@ -201,7 +201,8 @@ func _physics_process(delta: float) -> void:
 		var target: Vector2 = step["pos"]
 		var next: Vector2 = position.move_toward(target, minf(budget, MAX_SUBSTEP))   # de a poco: no pasa a través del jugador
 		# El jugador manda: si el paso lo metería en el jugador, se detiene (no lo empuja) y, si el paso sigue cerrado, lo rodea.
-		if _player_near(next, PLAYER_GAP) and _gets_closer_to_player(next) and _sidesteps < SIDESTEPS_BEFORE_PASSING:
+		# Salvo que lo esté guiando ella (EscortSystem): él va pegado y se corre; ella no se frena por él.
+		if not _guiding_player() and _player_near(next, PLAYER_GAP) and _gets_closer_to_player(next) and _sidesteps < SIDESTEPS_BEFORE_PASSING:
 			_blocked_for += delta
 			_facing = ZoneManager.player.global_position - position
 			CharacterFrames.apply(_sprite, _facing, 0.0, false, _sitting)
@@ -234,6 +235,11 @@ func _physics_process(delta: float) -> void:
 	# El reloj avanza una vez por cuadro y la física puede dar varios pasos: camina (de animación) mientras el reloj corre,
 	# aunque en este paso no le haya tocado avanzar.
 	CharacterFrames.apply(_sprite, _facing, WALK_SPEED if moved_total > 0.0 or (TimeManager.world() == TimeManager.World.CLOCK and not _route.is_empty()) else 0.0)
+
+
+## ¿Lleva a un jugador que camina solo detrás de ella? (modo guiado de EscortSystem)
+func _guiding_player() -> bool:
+	return ZoneManager.player != null and ZoneManager.player.guided and EscortSystem.is_leading(npc_id)
 
 
 ## ¿Este paso acerca al NPC al jugador? (Si ya está pegado y se aleja, puede seguir.)
@@ -761,6 +767,13 @@ func warp(zone_id: String, px: Vector2) -> void:
 ## ¿Terminó de caminar? (sin pasos pendientes)
 func is_idle() -> bool:
 	return _route.is_empty()
+
+
+## Hacia dónde camina ahora, en esta zona (Vector2.INF si está quieto o lo que sigue es un salto de zona).
+func next_step() -> Vector2:
+	if _route.is_empty() or _talking or _held or _route[0].get("instant", false):
+		return Vector2.INF
+	return _route[0]["pos"]
 
 
 ## Abandona el horario y va a `zone_id`/`tile` (p. ej. vuelve a su trabajo cuando decide no viajar).

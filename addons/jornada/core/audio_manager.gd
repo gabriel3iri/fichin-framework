@@ -235,10 +235,17 @@ func _on_zone_changed(_zone_id: String) -> void:
 func _update_ambient(fade: float = 1.5) -> void:
 	var zone: String = ZoneManager.current_zone
 	var wanted: String = _config.get("ambient", {}).get(zone, "")
-	# "ambient_changes": desde una hora, un ambiente se cambia por otro (el pueblo con lluvia cuando empieza a llover)
+	# "ambient_changes": desde una hora (y hasta otra, `until`), un ambiente se cambia por otro (el pueblo con lluvia
+	# cuando empieza a llover); con `zones`, solo en esas zonas (el vapor del tren en la estación mientras está parado).
+	var now: int = TimeManager.now_minutes()
 	for change: Dictionary in _config.get("ambient_changes", []):
-		if wanted == change["replace"] and TimeManager.now_minutes() >= TimeManager.parse_clock(change["from"]):
-			wanted = change["with"]
+		if wanted != change["replace"] or now < TimeManager.parse_clock(change["from"]):
+			continue
+		if change.has("until") and now >= TimeManager.parse_clock(change["until"]):
+			continue
+		if change.has("zones") and not zone in (change["zones"] as Array):
+			continue
+		wanted = change["with"]
 	# "ambient_crowds": con al menos `people` personas en la zona, el ambiente se cambia por su versión llena (el bar
 	# a la hora del almuerzo). Sigue a la gente, no al reloj: si alguien se va antes, se nota.
 	var crowd: Dictionary = _config.get("ambient_crowds", {}).get(wanted, {})

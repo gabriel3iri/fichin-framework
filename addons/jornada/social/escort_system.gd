@@ -29,6 +29,9 @@ const GUIDE_GAP: float = 26.0
 const GUIDE_RETARGET: float = 0.25
 const GUIDE_EXIT_REACH: float = 6.0
 const STUCK_SECONDS: float = 4.0
+## Guiado: si ella viene hacia él (sale de un cuarto por donde él entró), él se corre a un costado y espera ahí.
+const MAKE_WAY_REACH: float = 30.0
+const MAKE_WAY_SECONDS: float = 1.2
 ## Segundos desde que entra a una zona hasta que ella dice su frase de esa zona.
 const BARK_DELAY: float = 0.8
 
@@ -42,6 +45,7 @@ var _generation: int = 0        # sube con cada loop o partida nueva: corta lo q
 var _guide_retarget: float = 0.0
 var _stuck: float = 0.0
 var _stuck_from: Vector2 = Vector2.ZERO
+var _aside_for: float = 0.0
 
 
 func _ready() -> void:
@@ -317,6 +321,7 @@ func _set_guided(on: bool) -> void:
 	player.guided = on
 	player.stop_guide()
 	_guide_retarget = 0.0
+	_aside_for = 0.0
 	_stuck = 0.0
 	_stuck_from = player.global_position
 
@@ -334,6 +339,11 @@ func _update_guided(delta: float) -> void:
 		_stuck = 0.0
 		return
 	if leader.zone == ZoneManager.current_zone:
+		if _aside_for > 0.0:
+			_aside_for -= delta   # corrido a un costado: la deja pasar
+			return
+		if _make_way(player, leader):
+			return
 		_guide_retarget -= delta
 		if _guide_retarget <= 0.0:
 			_guide_retarget = GUIDE_RETARGET
@@ -356,6 +366,36 @@ func _update_guided(delta: float) -> void:
 			_guide_retarget = GUIDE_RETARGET
 			player.guide_to(exit_px)
 	_check_stuck(delta, player, leader)
+
+
+## Si el próximo paso de ella va hacia él, él se corre a la celda libre de al lado (de costado respecto de por donde
+## viene ella) y espera ahí MAKE_WAY_SECONDS. Sin eso, ella frena, intenta rodearlo y termina pasando con «Con permiso».
+func _make_way(player: PlayerController, leader: NpcActor) -> bool:
+	var next: Vector2 = leader.next_step()
+	if next == Vector2.INF:
+		return false
+	var heading: Vector2 = next - leader.global_position
+	var to_player: Vector2 = player.global_position - leader.global_position
+	if heading.length() < 1.0 or to_player.length() > MAKE_WAY_REACH or heading.normalized().dot(to_player.normalized()) < 0.4:
+		return false
+	var side: Vector2 = Vector2(-heading.y, heading.x).normalized()
+	var here: Vector2i = ZoneManager.cell_of(player.global_position)
+	var options: Array[Vector2i] = []
+	for s: float in [1.0, -1.0]:
+		var step: Vector2i = Vector2i(roundi(side.x * s), roundi(side.y * s))
+		options.append(here + step)
+		options.append(here + step + Vector2i(roundi(-heading.normalized().x), roundi(-heading.normalized().y)))
+	for cell: Vector2i in options:
+		if cell == here or ZoneManager.is_cell_solid(ZoneManager.current_zone, cell):
+			continue
+		var spot: Vector2 = ZoneManager.tile_px(cell)
+		if spot.distance_to(next) < 14.0:
+			continue   # ahí es justo por donde pasa ella
+		player.guide_to(spot, 1.0)
+		_aside_for = MAKE_WAY_SECONDS
+		_stuck = 0.0
+		return true
+	return false
 
 
 ## Cruza hacia `target` por donde lo haría a pie: una puerta (fundido) o un borde (deslizamiento).
